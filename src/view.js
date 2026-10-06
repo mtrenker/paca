@@ -9,8 +9,6 @@ const TOOL_LABELS = {
 	draft_issue: (a) => `Drafted an issue for ${a.repository}`,
 };
 
-const UNRESOLVED = new Set(["proposed", "creating", "unknown"]);
-
 /** What a draft card shows. `checkUrl` is where to look when the outcome is unknown. */
 function draftCard(d) {
 	const card = { id: d.id, repository: d.repository, title: d.title, body: d.body, status: d.status };
@@ -105,13 +103,13 @@ export function uiState(view, { busy, drafts } = {}) {
 	// Steps still marked running after the run ended were cut off.
 	if (!running) for (const step of tools.values()) if (step.status === "running") step.status = "interrupted";
 
-	// Compaction drops old turns from the view, but not their drafts. Keep the ones still waiting for
-	// a decision or a check visible in one turn at the top.
+	// Compaction drops old turns from the view, but not their drafts. Show those in one turn at the
+	// top, whatever their status, so a decision made there keeps its outcome and link on the page.
 	const earlier = [];
 	for (const draft of Object.values(drafts?.items ?? {})) {
 		const owner = turnOfCall.get(draft.id);
 		if (owner) owner.drafts.push(draftCard(draft));
-		else if (UNRESOLVED.has(draft.status)) earlier.push(draftCard(draft));
+		else earlier.push(draftCard(draft));
 	}
 	if (earlier.length) turns.unshift({ id: "earlier-drafts", question: "Earlier drafts", steps: [], answer: "", notices: [], drafts: earlier });
 
