@@ -21,11 +21,14 @@ export async function loadConfig({ needWeb = true } = {}) {
 	if (needWeb) {
 		const url = new URL(config.publicUrl ?? fail("publicUrl is required"));
 		if (url.protocol !== "https:") fail("publicUrl must be https");
+		if (process.env.PACA_PORT) config.port = Number(process.env.PACA_PORT);
 		if (!Number.isInteger(config.port)) fail("port is required");
 		for (const key of ["issuer", "clientId", "allowedSubject"]) {
 			if (typeof config.oidc?.[key] !== "string" || !config.oidc[key]) fail(`oidc.${key} is required`);
 		}
 		if (!process.env.PACA_OIDC_CLIENT_SECRET) throw new Error("PACA_OIDC_CLIENT_SECRET is not set; see Configure in the README");
 	}
-	return { ...config, publicOrigin: needWeb ? new URL(config.publicUrl).origin : undefined };
+	// Loopback unless PACA_HOST says otherwise; the container image sets 0.0.0.0 (see docs/container.md).
+	const host = process.env.PACA_HOST || "127.0.0.1";
+	return { ...config, host, publicOrigin: needWeb ? new URL(config.publicUrl).origin : undefined };
 }
