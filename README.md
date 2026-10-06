@@ -161,7 +161,8 @@ on a phone or browser on the tailnet.
 
 To ask one question from the terminal, without sign-in or a server and in its own conversation
 store (`ask.sqlite`), run the following. It needs only `github` and `piClean` in the config, and
-it spends one real model answer.
+it spends one real model answer. It cannot create issues: a draft made there stays in
+`ask.sqlite`, and the web page never shows it.
 
 ```sh
 npm run ask -- "What needs attention across my projects?"
