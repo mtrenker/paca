@@ -1,5 +1,5 @@
 // HTTP routes: sign-in, the page, prompts as POSTs and the conversation as an SSE stream.
-// Binds to localhost only; HTTPS and the tailnet name come from the reverse proxy in front.
+// Binds to loopback unless PACA_HOST says otherwise; HTTPS comes from the reverse proxy in front.
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";

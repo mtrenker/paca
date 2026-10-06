@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/main.js",
     "ask": "node src/ask.js",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "test:container": "node test/container/smoke.mjs"
   },
   "dependencies": {
     "@earendil-works/chord": "1.0.3",

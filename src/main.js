@@ -34,8 +34,8 @@ drafts.subscribe(() => state.changed());
 
 const info = { model: label, repositories: github.repositories, projects: github.projects.length };
 const server = createApp({ config, sessions, oidc, paca, state, info, publicDir: join(import.meta.dirname, "..", "public") });
-server.listen(config.port, "127.0.0.1", () => {
-	console.log(`paca: listening on http://127.0.0.1:${config.port}, public at ${config.publicUrl}`);
+server.listen(config.port, config.host, () => {
+	console.log(`paca: listening on http://${config.host}:${config.port}, public at ${config.publicUrl}`);
 	console.log(`paca: model ${label}; ${github.projects.length} Projects in ${github.repositories.length} repositories`);
 });
 
