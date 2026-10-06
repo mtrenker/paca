@@ -1,0 +1,24 @@
+{
+  "name": "paca",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/main.js",
+    "ask": "node src/ask.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.0.3",
+    "@earendil-works/pi-ai": "1.0.3",
+    "@earendil-works/pi-coding-agent": "1.0.3",
+    "@earendil-works/pi-durable": "1.0.3",
+    "openid-client": "6.8.8"
+  },
+  "overrides": {
+    "@earendil-works/chord": "1.0.3",
+    "@earendil-works/pi-ai": "1.0.3",
+    "@earendil-works/pi-agent-core": "1.0.3"
+  }
+}
