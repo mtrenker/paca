@@ -20,7 +20,7 @@ Pi Durable 1.0.3, which is itself experimental.
 - One conversation that persists across reloads, devices and restarts.
 
 Not available yet: editing issues, labels, assignees, milestones and Project fields such as
-priority ([#2](https://github.com/mtrenker/paca/issues/2)).
+priority ([#6](https://github.com/mtrenker/paca/issues/6)).
 
 ## How it works
 
@@ -83,9 +83,9 @@ session cookie. Conversation text and tool results are sent to your model provid
   environment variable. Paca reads Pi's agent directory, `~/.pi/agent` unless
   `PI_CODING_AGENT_DIR` points elsewhere. OAuth logins refresh there, under Pi's file lock.
 - A checkout of [pi-clean](https://github.com/mtrenker/pi-clean), for `scripts/github-planning.mjs`.
-  Paca was built against pi-clean revision `8921989`.
+  Paca was built against pi-clean revision `8921989`. The container image already includes it.
 - An **OIDC provider** with a confidential client for Paca, and **HTTPS** in front of Paca. Paca
-  listens on `127.0.0.1` only; the examples use `tailscale serve`.
+  listens on `127.0.0.1` unless `PACA_HOST` says otherwise; the examples use `tailscale serve`.
 - Optional: [Proton Pass CLI](https://protonpass.github.io/pass-cli/) (`pass-cli`), as one way to
   deliver the client secret without writing it to disk.
 
@@ -126,6 +126,8 @@ npm test
    - Each `github.projects` entry names a Project and the one repository Paca may read and create
      issues in for it.
    - `PACA_DATA_DIR` moves `.data/`, and `PACA_CONFIG` points at another config file.
+   - `PACA_HOST` changes the listen address from `127.0.0.1`, and `PACA_PORT` overrides `port`.
+     The container image sets both; leave them unset for a direct run.
 
 2. Make the client secret available as `PACA_OIDC_CLIENT_SECRET` when Paca starts. With Proton
    Pass, put a reference in `.data/secrets.env` (mode 0600):
@@ -168,6 +170,13 @@ it spends one real model answer. It cannot create issues: a draft made there sta
 npm run ask -- "What needs attention across my projects?"
 ```
 
+### Run in a container
+
+The image `ghcr.io/mtrenker/paca` (linux/amd64) runs Paca with `gh` and the pi-clean collector
+included. Configuration, credentials and data come in at runtime through one volume and
+environment variables. See [Run Paca in a container](docs/container.md) for setup, start, stop,
+backup and upgrade.
+
 ## Stop and reset
 
 Press Ctrl-C in both terminals. `tailscale serve` without `--bg` removes its route when it stops;
@@ -183,6 +192,8 @@ issue again.
 ```sh
 npm test
 ```
+
+To test the container image, see [Test the image](docs/container.md#test-the-image).
 
 The tests use fakes for the model, GitHub and the OIDC provider. Apart from local test servers,
 they make no network calls. They cover:

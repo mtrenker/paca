@@ -38,6 +38,7 @@ private issues, or real hostnames, account IDs and secret references. Use placeh
 
 Describe what changed and why, how you checked it (`npm test` and any manual check), and what is
 left out. Link the issue with `Refs #<number>`, or `Closes #<number>` only when the pull request
-finishes the issue. `npm test` runs on every pull request.
+finishes the issue. Every pull request runs `npm test` and builds and smoke-tests the container
+image ([Test the image](docs/container.md#test-the-image)).
 
 By contributing, you agree that your contributions are released under the [MIT License](LICENSE).
