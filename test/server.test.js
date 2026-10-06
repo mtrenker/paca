@@ -174,4 +174,3 @@ describe("draft decisions", () => {
 		assert.equal((await decide(auth, "approve", {})).status, 400);
 	});
 });
-
