@@ -27,8 +27,10 @@ const github = createGitHub({ projects: config.github.projects, piClean: config.
 const paca = await openPaca({ storage: await openNodeSqliteStorage(join(DATA_DIR, "paca.sqlite")), models, model, github });
 
 const view = await paca.root.viewState(BACKGROUND_CONTEXT);
-const state = createStateFeed(() => uiState(view.value, { busy: paca.busy() }));
+const drafts = await paca.draftsState();
+const state = createStateFeed(() => uiState(view.value, { busy: paca.busy(), drafts: drafts.value }));
 view.subscribe(() => state.changed());
+drafts.subscribe(() => state.changed());
 
 const info = { model: label, repositories: github.repositories, projects: github.projects.length };
 const server = createApp({ config, sessions, oidc, paca, state, info, publicDir: join(import.meta.dirname, "..", "public") });

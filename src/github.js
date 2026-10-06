@@ -1,5 +1,5 @@
-// Read-only GitHub evidence for the configured Projects and their repositories.
-// Every read is a fixed-argument child process (no shell); nothing here can write to GitHub.
+// GitHub access for the configured Projects and their repositories. Every call is a fixed-argument
+// child process (no shell). The only write is createIssue, which the server calls after Martin approves.
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,19 +8,35 @@ const COLLECT_TIMEOUT_MS = 90_000;
 const READ_TIMEOUT_MS = 20_000;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const OVERVIEW_CACHE_MS = 60_000;
+const WRITE_TIMEOUT_MS = 30_000;
 
 export class EvidenceUnavailable extends Error {}
 
-export function runFile(file, args, { env, timeout }) {
+export function runFile(file, args, { env, timeout, input }) {
 	return new Promise((resolve, reject) => {
-		execFile(file, args, { env, timeout, maxBuffer: MAX_OUTPUT_BYTES, encoding: "utf8" }, (error, stdout, stderr) => {
+		const child = execFile(file, args, { env, timeout, maxBuffer: MAX_OUTPUT_BYTES, encoding: "utf8" }, (error, stdout, stderr) => {
 			if (error) {
 				const detail = (stderr || error.message || "").trim().split("\n").slice(-3).join(" ");
-				reject(new EvidenceUnavailable(`${error.killed ? "timed out" : "failed"}: ${detail}`.slice(0, 400)));
+				reject(
+					Object.assign(new EvidenceUnavailable(`${error.killed ? "timed out" : "failed"}: ${detail}`.slice(0, 400)), {
+						// A string code (ENOENT, ...) means the program never started.
+						notStarted: typeof error.code === "string" && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+						stderr: String(stderr ?? ""),
+					}),
+				);
 			} else resolve(stdout);
 		});
+		if (input !== undefined) {
+			child.stdin.on("error", () => {}); // gh exiting early is reported through the exit callback
+			child.stdin.end(input);
+		}
 	});
 }
+
+/** GitHub refused the write, or it never left this machine: nothing was created. */
+export class WriteRejected extends Error {}
+/** The write may or may not have happened; someone has to check on GitHub. */
+export class WriteUnknown extends Error {}
 
 /**
  * @param {object} options
@@ -81,7 +97,30 @@ export function createGitHub({ projects, piClean, dataDir, run = runFile, now = 
 			.join("\n");
 	}
 
-	return { repositories, projects, overview, readIssue, searchIssues };
+	/**
+	 * Creates one issue with exactly this title and body. Not idempotent: callers must never retry
+	 * after WriteUnknown. Only an HTTP 4xx answer or a failure to start gh counts as "not created".
+	 */
+	async function createIssue(repository, { title, body }) {
+		const repo = checkRepository(repository);
+		let out;
+		try {
+			out = await run("gh", ["api", "--method", "POST", `repos/${repo}/issues`, "--input", "-"], { env, timeout: WRITE_TIMEOUT_MS, input: JSON.stringify({ title, body }) });
+		} catch (error) {
+			const rejected = /\(HTTP 4\d\d\)/.exec(error.stderr ?? "");
+			if (error.notStarted || rejected) throw new WriteRejected(error.message);
+			throw new WriteUnknown(error.message);
+		}
+		try {
+			const issue = JSON.parse(out);
+			if (!Number.isInteger(issue.number) || typeof issue.html_url !== "string") throw new Error("no issue in the response");
+			return { number: issue.number, url: issue.html_url };
+		} catch (error) {
+			throw new WriteUnknown(`unreadable response: ${error.message}`);
+		}
+	}
+
+	return { repositories, projects, checkRepository, overview, readIssue, searchIssues, createIssue };
 }
 
 export function planningConfigFor(projects) {

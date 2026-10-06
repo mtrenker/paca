@@ -1,14 +1,25 @@
-// The Paca conversation: a Pi Durable harness with one extension holding the prompt, the
-// read-only GitHub tools and the per-answer limits. No coding tools or execution environment
-// are installed, so the model can only call the tools defined here.
+// The Paca conversation: a Pi Durable harness with one extension holding the prompt, the GitHub
+// tools and the per-answer limits. No coding tools or execution environment are installed, so the
+// model can only call the tools defined here. The model can draft an issue; only Martin's approval,
+// through approveDraft, creates it.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
-import { createRegistry, defineExtension, defineTool, GenerationTask, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
+import { createRegistry, defineDoc, defineExtension, defineTool, GenerationTask, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
+import { WriteRejected } from "./github.js";
 
 export const LIMITS = { modelRequests: 12, toolCalls: 30, durationMs: 3 * 60_000 };
 const ctx = BACKGROUND_CONTEXT;
 
 export class LimitReached extends Error {}
+
+/**
+ * Issue drafts by id (the tool call that made them). Status: proposed, then created, failed,
+ * unknown or dismissed; "creating" holds the claim while the one GitHub call runs. Content never
+ * changes after the draft is made, so approval creates exactly what the card showed.
+ */
+export const Drafts = defineDoc({ kind: "paca.drafts", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ items: {} }) });
+const TITLE_MAX = 256;
+const BODY_MAX = 20_000;
 
 function prompt(github) {
 	const projects = github.projects.map((p) => `- ${p.repository} (Project ${p.owner}/${p.number})`).join("\n");
@@ -22,7 +33,9 @@ How to work:
 - For broad questions start with portfolio_overview. Use read_issue before recommending something specific about one issue, and search_issues to find issues by words.
 - If a tool fails or reports UNAVAILABLE evidence, say exactly what could not be read. Missing data never means an empty or healthy project.
 - When ranking what needs attention, weigh: urgent or active work (P0/P1, in progress, in review) that is blocked or stale; open pull requests; Ready items missing priority or size; unclear or contradictory readiness; untriaged Inbox items. Give the reason in one short clause.
-- This version is read-only. You cannot create, edit or reprioritize issues. When a change would help, state the exact change you would propose so Martin can decide.
+- You cannot change GitHub yourself. To propose a new issue, call draft_issue: Martin sees the exact repository, title and body on a card and decides whether to create it. Until the card says so, nothing is created; never claim otherwise. Draft only when Martin asks for an issue or agrees to one.
+- A good issue body is short: the outcome, the next useful step and where it stops, how to check it, and what is left out. Link related issues instead of repeating them.
+- Editing existing issues, labels and Project priority are not available yet. When such a change would help, state the exact change so Martin can make it.
 
 How to answer (Martin often reads on a phone):
 - Lead with a short ranked list of at most 7 items. Each item: [owner/repo#number title](url), its status and priority, why it needs attention, and the next step.
@@ -53,6 +66,27 @@ function tools(github) {
 			parameters: Type.Object({ query: Type.String({ maxLength: 200 }), repository: Type.Optional(Type.String({ description: "owner/name" })) }),
 			replay: "safe",
 			execute: async (args) => text(await github.searchIssues(args.query, args.repository)),
+		}),
+		defineTool({
+			name: "draft_issue",
+			description: "Propose a new issue in a configured repository. Shows Martin a card with the exact repository, title and body; he creates or dismisses it. Does not create anything.",
+			parameters: Type.Object({
+				repository: Type.String({ description: "owner/name" }),
+				title: Type.String({ minLength: 1, maxLength: TITLE_MAX }),
+				body: Type.String({ maxLength: BODY_MAX, description: "GitHub Markdown" }),
+			}),
+			replay: "safe",
+			execute: async (args, api, context) => {
+				const repository = github.checkRepository(args.repository);
+				const title = args.title.trim();
+				if (!title) throw new Error("title must not be empty");
+				await api.commit(async (tx) => {
+					const drafts = await tx.doc(Drafts, api.conversationId);
+					// Keyed by the call, so a replayed call finds its draft instead of making another.
+					drafts.items[api.callId] ??= { id: api.callId, repository, title, body: args.body, status: "proposed", createdAt: new Date().toISOString() };
+				}, context);
+				return text(`Draft for ${repository} shown to Martin with Create and Dismiss. It is not created unless he approves it.`);
+			},
 		}),
 	];
 }
@@ -106,6 +140,14 @@ export async function openPaca({ storage, models, model, github, limits = LIMITS
 	const root = await harness.root(ctx, { agent: { model } });
 	await root.configure({ model, extensions: [Paca] }, ctx);
 
+	// A create that was claimed but never recorded may or may not exist on GitHub. Say so; never resend.
+	await root.commit(async (tx) => {
+		const drafts = await tx.doc(Drafts, root.id);
+		for (const draft of Object.values(drafts.items)) {
+			if (draft.status === "creating") Object.assign(draft, { status: "unknown", error: "Paca restarted while creating this issue." });
+		}
+	}, ctx);
+
 	// A run left over from a crash would resume and spend again without its limits; end it instead.
 	const initial = await root.viewState(ctx);
 	const leftover = initial.value.docs["pi.live"]?.run !== undefined;
@@ -144,10 +186,54 @@ export async function openPaca({ storage, models, model, github, limits = LIMITS
 		return { id: submission.id, duplicate: false, settled: current.settled };
 	}
 
+	const setDraft = (id, change) =>
+		root.commit(async (tx) => {
+			Object.assign((await tx.doc(Drafts, root.id)).items[id], change);
+		}, ctx);
+
+	/**
+	 * Creates the stored draft on GitHub. The claim (proposed -> creating) is one commit on the
+	 * harness's single commit line, so repeated or concurrent approvals find it already claimed.
+	 */
+	async function approveDraft(id) {
+		const claim = await root.commit(async (tx) => {
+			const draft = (await tx.doc(Drafts, root.id)).items[id];
+			if (!draft) return { refused: "not-found" };
+			if (draft.status !== "proposed") return { refused: draft.status };
+			draft.status = "creating";
+			draft.decidedAt = new Date().toISOString();
+			return { repository: draft.repository, title: draft.title, body: draft.body };
+		}, ctx);
+		if (claim.refused) return claim;
+		try {
+			const issue = await github.createIssue(claim.repository, { title: claim.title, body: claim.body });
+			await setDraft(id, { status: "created", number: issue.number, url: issue.url });
+			return { status: "created", url: issue.url };
+		} catch (error) {
+			const status = error instanceof WriteRejected ? "failed" : "unknown";
+			await setDraft(id, { status, error: String(error.message).slice(0, 300) });
+			return { status };
+		}
+	}
+
+	async function dismissDraft(id) {
+		return root.commit(async (tx) => {
+			const draft = (await tx.doc(Drafts, root.id)).items[id];
+			if (!draft) return { refused: "not-found" };
+			if (draft.status !== "proposed") return { refused: draft.status };
+			draft.status = "dismissed";
+			draft.decidedAt = new Date().toISOString();
+			return { status: "dismissed" };
+		}, ctx);
+	}
+
 	return {
 		harness,
 		root,
 		ask,
+		approveDraft,
+		dismissDraft,
+		draftsState: () => harness.documentState(Drafts, root.id, ctx),
 		stop: () => stop("Stopped by you."),
 		busy: () => run.active,
 		stopReason: () => run.stopReason,

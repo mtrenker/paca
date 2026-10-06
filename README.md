@@ -4,8 +4,8 @@ Paca is a private web chat about the GitHub issues and Projects of your own repo
 in from a phone or browser on your tailnet, ask what needs attention, and a real model answers from
 the issues it actually read, with links.
 
-This version only reads. It cannot create, edit or reprioritize issues yet
-([#2](https://github.com/mtrenker/paca/issues/2) adds approved writes next).
+Paca can also draft a new issue for you to create with one tap. It cannot edit issues, labels or
+Project priority yet ([#2](https://github.com/mtrenker/paca/issues/2) adds those next).
 
 ## How it works
 
@@ -27,6 +27,17 @@ This version only reads. It cannot create, edit or reprioritize issues yet
 
   Each tool runs `gh` or Node with fixed arguments (no shell) and refuses repositories outside the
   configured Projects. A failed read is shown as unavailable, never as an empty project.
+- **Issue drafts:** the model's `draft_issue` tool only stores a draft: repository (one of the
+  configured ones), title and body. The page shows it as a card with exactly that text. **Create
+  issue** sends that stored draft, never content from the request, with one
+  `gh api POST repos/<repo>/issues`; **Dismiss** creates nothing.
+  - A draft moves from proposed to creating, then created, failed, unknown or dismissed.
+  - The claim (proposed → creating) is a single Durable commit, so repeated taps, two devices or a
+    reconnect cannot send it twice.
+  - Only an HTTP 4xx answer, or `gh` failing to start, counts as **failed** (nothing created).
+    Anything else is **unknown**: a timeout, a 5xx, an unreadable answer, or a restart while
+    creating. The card then links to the repository's issues to check, and Paca never resends it.
+  - The card shows an issue link only when GitHub returned one.
 - **Limits:** each answer is limited to 12 model requests, 30 tool calls and 3 minutes, and has
   a Stop button. If Paca restarts mid-answer, the unfinished answer is ended rather than resumed,
   since resuming would spend again outside those limits.
@@ -103,4 +114,11 @@ npm test
 
 The tests use fakes for the model, GitHub and the identity provider. They cover refused
 identities, forged and expired sessions, Origin and CSRF checks, out-of-scope reads, unknown tools,
-the per-answer limits, duplicate requests, a crash mid-answer and the snapshot on reconnect.
+the per-answer limits, duplicate requests, a crash mid-answer and the snapshot on reconnect. For
+issue drafts, they cover:
+
+- drafting without writing;
+- approving exactly the stored content, once, even when approvals arrive together;
+- dismissal;
+- failed versus unknown outcomes;
+- a restart in the middle of a create.

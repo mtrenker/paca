@@ -78,9 +78,65 @@ function renderTurn(turn, isLast) {
 	} else if (isLast && state.running) {
 		section.append(el("p", "working", turn.steps.length ? "Thinking about what was read…" : "Starting…"));
 	}
+	for (const draft of turn.drafts ?? []) section.append(renderDraft(draft));
 	if (turn.retry && isLast && state.running) section.append(el("p", "notice", turn.retry));
 	for (const notice of turn.notices) section.append(el("p", `notice ${notice.tone === "error" ? "error" : ""}`, notice.text));
 	return section;
+}
+
+const DRAFT_KICKER = {
+	proposed: "Draft issue",
+	creating: "Creating issue…",
+	created: "Created issue",
+	failed: "Not created",
+	unknown: "Outcome unknown",
+	dismissed: "Dismissed",
+};
+const pendingDrafts = new Set();
+
+// A proposed issue, shown exactly as it would be created: plain text, nothing interpreted.
+function renderDraft(draft) {
+	const card = el("article", `draft-card ${draft.status}`);
+	card.append(el("p", "draft-kicker", `${DRAFT_KICKER[draft.status] ?? draft.status} · ${draft.repository}`));
+	card.append(el("h3", "draft-title", draft.title));
+	if (draft.status !== "dismissed") card.append(el("p", "draft-body", draft.body || "(no description)"));
+	const footer = el("div", "draft-footer");
+	if (draft.status === "proposed") {
+		const create = el("button", "", "Create issue");
+		const dismiss = el("button", "secondary", "Dismiss");
+		create.type = dismiss.type = "button";
+		create.disabled = dismiss.disabled = pendingDrafts.has(draft.id);
+		create.addEventListener("click", () => decide(draft.id, "approve"));
+		dismiss.addEventListener("click", () => decide(draft.id, "dismiss"));
+		footer.append(create, dismiss, el("span", "draft-note", "Creates it on GitHub as you."));
+	} else if (draft.status === "creating") {
+		footer.append(el("span", "draft-note", "Sending to GitHub…"));
+	} else if (draft.status === "created") {
+		footer.append(link(draft.url, `Open ${draft.repository}#${draft.number}`));
+	} else if (draft.status === "failed") {
+		footer.append(el("span", "draft-note", `GitHub did not create it: ${draft.error ?? "unknown reason"}. Ask Paca to draft it again if you still want it.`));
+	} else if (draft.status === "unknown") {
+		footer.append(el("span", "draft-note", "Paca can’t tell whether GitHub created it, so it won’t send it again. Check before drafting it again: "), link(draft.checkUrl, `${draft.repository} issues`));
+	} else if (draft.status === "dismissed") {
+		footer.append(el("span", "draft-note", "Nothing was created."));
+	}
+	card.append(footer);
+	return card;
+}
+
+async function decide(id, action) {
+	showError("");
+	pendingDrafts.add(id);
+	render();
+	try {
+		const response = await post(`/api/drafts/${action}`, { id });
+		if (!response.ok && response.status !== 409) showError((await response.json().catch(() => ({}))).error ?? "That didn’t work.");
+	} catch {
+		showError("Could not reach Paca. Reload to see whether the issue was created before trying again.");
+	} finally {
+		pendingDrafts.delete(id);
+		render();
+	}
 }
 
 // Markdown subset: headings, ordered and unordered lists, paragraphs, bold, inline code, links.

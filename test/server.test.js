@@ -12,6 +12,7 @@ const MARTIN = { iss: ISSUER, sub: "martin-subject", preferred_username: "martin
 let base;
 let server;
 let asked;
+let decided;
 let feed;
 const key = randomBytes(32);
 const sessions = createSessions({ key, issuer: ISSUER, allowedSubject: MARTIN.sub });
@@ -19,6 +20,7 @@ let nextClaims = MARTIN;
 
 before(async () => {
 	asked = [];
+	decided = [];
 	feed = createStateFeed(() => ({ running: false, turns: [{ id: "1", question: "earlier", steps: [], answer: "kept", notices: [] }] }), 1);
 	server = createApp({
 		config: { publicUrl: PUBLIC, publicOrigin: new URL(PUBLIC).origin },
@@ -27,7 +29,12 @@ before(async () => {
 			begin: async () => ({ url: `${ISSUER}authorize?state=s`, transaction: { state: "s", nonce: "n", verifier: "v" } }),
 			finish: async () => nextClaims,
 		},
-		paca: { ask: async (text, requestId) => (asked.push({ text, requestId }), { id: 1, duplicate: false }), stop: () => {} },
+		paca: {
+			ask: async (text, requestId) => (asked.push({ text, requestId }), { id: 1, duplicate: false }),
+			stop: () => {},
+			approveDraft: async (...args) => (decided.push(["approve", ...args]), args[0] === "done" ? { refused: "created" } : { status: "created", url: "https://github.com/o/r/issues/1" }),
+			dismissDraft: async (...args) => (decided.push(["dismiss", ...args]), { status: "dismissed" }),
+		},
 		state: feed,
 		info: { model: "test/model", repositories: ["o/r"], projects: 1 },
 		publicDir: join(import.meta.dirname, "..", "public"),
@@ -139,3 +146,32 @@ describe("requests", () => {
 		assert.equal(JSON.parse(frame.split("data: ")[1]).turns[0].answer, "kept");
 	});
 });
+
+describe("draft decisions", () => {
+	const decide = (auth, action, body, headers = {}) =>
+		fetch(`${base}/api/drafts/${action}`, {
+			method: "POST",
+			headers: { cookie: auth.cookie, origin: new URL(PUBLIC).origin, "x-csrf-token": auth.csrf, "content-type": "application/json", ...headers },
+			body: JSON.stringify(body),
+		});
+
+	it("refuses decisions without a session, from another origin or without the CSRF token", async () => {
+		const auth = await signedIn();
+		assert.equal((await decide({ cookie: "", csrf: "" }, "approve", { id: "d1" })).status, 401);
+		assert.equal((await decide(auth, "approve", { id: "d1" }, { origin: "https://evil.example.test" })).status, 403);
+		assert.equal((await decide(auth, "approve", { id: "d1" }, { "x-csrf-token": "wrong" })).status, 403);
+		assert.equal(decided.length, 0);
+	});
+
+	it("passes only the draft id, never replacement content", async () => {
+		const auth = await signedIn();
+		const response = await decide(auth, "approve", { id: "d1", title: "Something else", body: "injected", repository: "x/y" });
+		assert.equal(response.status, 200);
+		assert.deepEqual(decided.at(-1), ["approve", "d1"]);
+		assert.equal((await decide(auth, "dismiss", { id: "d2" })).status, 200);
+		assert.deepEqual(decided.at(-1), ["dismiss", "d2"]);
+		assert.equal((await decide(auth, "approve", { id: "done" })).status, 409);
+		assert.equal((await decide(auth, "approve", {})).status, 400);
+	});
+});
+

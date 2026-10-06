@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { createGitHub, EvidenceUnavailable, formatOverview } from "../src/github.js";
+import { createGitHub, EvidenceUnavailable, formatOverview, WriteRejected, WriteUnknown } from "../src/github.js";
 
 const projects = [
 	{ owner: "o", number: 1, repository: "o/api" },
@@ -55,5 +55,40 @@ describe("GitHub reads", () => {
 		const text = formatOverview(snapshot, { findings: [] }, projects);
 		assert.match(text, /from 1 of 2 configured Projects/);
 		assert.match(text, /UNAVAILABLE: Project o\/2 \(o\/web\)/);
+	});
+
+	it("creates an issue with one fixed POST and the content on stdin", async () => {
+		const inputs = [];
+		const gh = createGitHub({
+			projects,
+			piClean: "/pi-clean",
+			dataDir: await mkdtemp(join(tmpdir(), "paca-")),
+			run: async (file, args, options) => {
+				inputs.push({ argv: [file, ...args], input: options.input });
+				return JSON.stringify({ number: 7, html_url: "https://github.com/o/api/issues/7" });
+			},
+		});
+		assert.deepEqual(await gh.createIssue("o/api", { title: "T; rm -rf ~", body: "B" }), { number: 7, url: "https://github.com/o/api/issues/7" });
+		assert.deepEqual(inputs[0].argv, ["gh", "api", "--method", "POST", "repos/o/api/issues", "--input", "-"]);
+		assert.deepEqual(JSON.parse(inputs[0].input), { title: "T; rm -rf ~", body: "B" });
+		await assert.rejects(gh.createIssue("someone/else", { title: "T", body: "" }), /outside Paca's scope/);
+		assert.equal(inputs.length, 1);
+	});
+
+	it("only calls a write failed when GitHub refused it or gh never started", async () => {
+		const failure = (props) => async () => {
+			throw Object.assign(new EvidenceUnavailable("failed"), { stderr: "", notStarted: false, ...props });
+		};
+		const cases = [
+			[failure({ stderr: "gh: Validation Failed (HTTP 422)" }), WriteRejected],
+			[failure({ notStarted: true }), WriteRejected],
+			[failure({ stderr: "gh: Server Error (HTTP 502)" }), WriteUnknown],
+			[failure({ stderr: "" }), WriteUnknown],
+			[async () => "not json", WriteUnknown],
+		];
+		for (const [run, expected] of cases) {
+			const { gh } = await github(run);
+			await assert.rejects(gh.createIssue("o/api", { title: "T", body: "" }), expected);
+		}
 	});
 });

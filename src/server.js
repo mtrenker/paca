@@ -21,7 +21,7 @@ const MAX_QUESTION = 4000;
  * @param {{ publicUrl: string, publicOrigin: string }} deps.config
  * @param {ReturnType<import("./auth.js").createSessions>} deps.sessions
  * @param {{ begin(): Promise<{url: string, transaction: object}>, finish(url: string, transaction: object): Promise<object> }} deps.oidc
- * @param {{ ask(text: string, requestId: string): Promise<object>, stop(): void }} deps.paca
+ * @param {{ ask(text: string, requestId: string): Promise<object>, stop(): void, approveDraft(id: string): Promise<object>, dismissDraft(id: string): Promise<object> }} deps.paca
  * @param {{ current(): object, subscribe(fn: (state: object) => void): () => void }} deps.state
  * @param {object} deps.info shown to the signed-in page: model and scope
  */
@@ -120,6 +120,15 @@ export function createApp({ config, sessions, oidc, paca, state, info, publicDir
 				if (error instanceof ConversationBusy) return json(res, 409, { error: "Paca is still answering. Stop it or wait." });
 				throw error;
 			}
+		}
+		if (route === "POST /api/drafts/approve" || route === "POST /api/drafts/dismiss") {
+			// Only the draft id is read; the content created is the stored draft the card showed.
+			const { id } = await body(req);
+			if (typeof id !== "string" || !id || id.length > 200) return json(res, 400, { error: "Missing draft id." });
+			const result = route.endsWith("approve") ? await paca.approveDraft(id) : await paca.dismissDraft(id);
+			if (result.refused === "not-found") return json(res, 404, { error: "That draft does not exist." });
+			if (result.refused) return json(res, 409, { error: `That draft is already ${result.refused}.`, status: result.refused });
+			return json(res, 200, result);
 		}
 		if (route === "POST /api/stop") {
 			paca.stop();

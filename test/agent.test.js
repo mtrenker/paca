@@ -9,8 +9,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { openPaca } from "../src/agent.js";
-import { EvidenceUnavailable } from "../src/github.js";
+import { Drafts, openPaca } from "../src/agent.js";
+import { EvidenceUnavailable, WriteRejected, WriteUnknown } from "../src/github.js";
 import { uiState } from "../src/view.js";
 
 const github = {
@@ -30,7 +30,7 @@ async function setup({ responses, gh = github, limits, storage = new MemoryStora
 	const paca = await openPaca({ storage, models, model: { provider: model.provider, modelId: model.id }, github: gh, limits });
 	const state = async () => {
 		const view = await paca.root.viewState(ctx);
-		const value = uiState(view.value);
+		const value = uiState(view.value, { drafts: await paca.harness.snapshot(Drafts, paca.root.id, ctx) });
 		view.dispose();
 		return value;
 	};
@@ -38,10 +38,10 @@ async function setup({ responses, gh = github, limits, storage = new MemoryStora
 }
 
 describe("Paca conversation", () => {
-	it("offers the model only Paca's read tools and blocks anything else", async () => {
+	it("offers the model only Paca's tools and blocks anything else", async () => {
 		const { paca, state } = await setup({ responses: [call("bash", { command: "cat ~/.pi/agent/auth.json" }), fauxAssistantMessage("done")] });
 		const offered = (await paca.root.agent(ctx)).tools.map((t) => t.name);
-		assert.deepEqual(offered.sort(), ["portfolio_overview", "read_issue", "search_issues"]);
+		assert.deepEqual(offered.sort(), ["draft_issue", "portfolio_overview", "read_issue", "search_issues"]);
 		const { settled } = await paca.ask("hi", "request-1");
 		assert.equal((await settled).status, "done");
 		const [step] = (await state()).turns[0].steps;
@@ -104,5 +104,102 @@ describe("Paca conversation", () => {
 		assert.equal(faux.state.callCount, 0);
 		assert.match(after.turns[0].notices.at(-1).text, /interrupted because Paca restarted/);
 		await paca.close();
+	});
+});
+
+describe("Issue drafts", () => {
+	const draftCall = (args) => call("draft_issue", { repository: "o/r", title: "Show failed checks", body: "## Outcome\nNames of failed checks.", ...args });
+
+	function writes(outcome = async () => ({ number: 12, url: "https://github.com/o/r/issues/12" })) {
+		const sent = [];
+		const gh = {
+			...github,
+			checkRepository: (r) => {
+				if (r !== "o/r") throw new Error(`Repository ${r} is outside Paca's scope.`);
+				return r;
+			},
+			createIssue: async (repository, content) => (sent.push({ repository, ...content }), outcome()),
+		};
+		return { gh, sent };
+	}
+
+	async function drafted(gh, args, storage) {
+		const s = await setup({ gh, storage, responses: [draftCall(args), fauxAssistantMessage("Here is a draft.")] });
+		await (await s.paca.ask("draft it", "request-d")).settled;
+		const drafts = await s.paca.harness.snapshot(Drafts, s.paca.root.id, ctx);
+		return { ...s, id: Object.keys(drafts.items)[0], drafts };
+	}
+
+	it("drafting shows a card and writes nothing", async () => {
+		const { gh, sent } = writes();
+		const { state, id } = await drafted(gh);
+		assert.equal(sent.length, 0);
+		const [card] = (await state()).turns[0].drafts;
+		assert.equal(card.id, id);
+		assert.deepEqual([card.status, card.repository, card.title], ["proposed", "o/r", "Show failed checks"]);
+	});
+
+	it("refuses a draft for a repository outside the scope", async () => {
+		const { gh } = writes();
+		const { drafts, state } = await drafted(gh, { repository: "someone/else" });
+		assert.deepEqual(drafts.items, {});
+		assert.equal((await state()).turns[0].steps[0].status, "unavailable");
+	});
+
+	it("approval creates exactly the stored draft, once, and links it", async () => {
+		const { gh, sent } = writes();
+		const { paca, state, id } = await drafted(gh);
+		const results = await Promise.all([paca.approveDraft(id), paca.approveDraft(id), paca.approveDraft(id)]);
+		assert.equal(sent.length, 1);
+		assert.deepEqual(sent[0], { repository: "o/r", title: "Show failed checks", body: "## Outcome\nNames of failed checks." });
+		assert.equal(results.filter((r) => r.status === "created").length, 1);
+		assert.deepEqual(await paca.approveDraft(id), { refused: "created" });
+		const [card] = (await state()).turns[0].drafts;
+		assert.deepEqual([card.status, card.url, card.number], ["created", "https://github.com/o/r/issues/12", 12]);
+	});
+
+	it("dismissal creates nothing and cannot be approved afterwards", async () => {
+		const { gh, sent } = writes();
+		const { paca, id } = await drafted(gh);
+		assert.deepEqual(await paca.dismissDraft(id), { status: "dismissed" });
+		assert.deepEqual(await paca.approveDraft(id), { refused: "dismissed" });
+		assert.deepEqual(await paca.approveDraft("no-such-draft"), { refused: "not-found" });
+		assert.equal(sent.length, 0);
+	});
+
+	it("keeps a refused write apart from an unknown one and never resends either", async () => {
+		for (const [error, expected] of [
+			[new WriteRejected("failed: gh: Validation Failed (HTTP 422)"), "failed"],
+			[new WriteUnknown("timed out"), "unknown"],
+		]) {
+			const { gh, sent } = writes(async () => Promise.reject(error));
+			const { paca, state, id } = await drafted(gh);
+			assert.deepEqual(await paca.approveDraft(id), { status: expected });
+			assert.deepEqual(await paca.approveDraft(id), { refused: expected });
+			assert.equal(sent.length, 1);
+			const [card] = (await state()).turns[0].drafts;
+			assert.equal(card.status, expected);
+			assert.equal(card.url, undefined);
+			if (expected === "unknown") assert.match(card.checkUrl, /^https:\/\/github\.com\/o\/r\/issues\?q=/);
+		}
+	});
+
+	it("marks a create cut off by a restart as unknown and does not resend it", async () => {
+		const file = join(await mkdtemp(join(tmpdir(), "paca-")), "paca.sqlite");
+		const { gh } = writes();
+		const first = await drafted(gh, {}, await openNodeSqliteStorage(file));
+		// Simulate a crash after the claim: the draft was left in "creating".
+		await first.paca.root.commit(async (tx) => {
+			(await tx.doc(Drafts, first.paca.root.id)).items[first.id].status = "creating";
+		}, ctx);
+		await first.paca.close();
+
+		const after = writes();
+		const second = await setup({ gh: after.gh, storage: await openNodeSqliteStorage(file), responses: [] });
+		const [card] = (await second.state()).turns[0].drafts;
+		assert.equal(card.status, "unknown");
+		assert.deepEqual(await second.paca.approveDraft(first.id), { refused: "unknown" });
+		assert.equal(after.sent.length, 0);
+		await second.paca.close();
 	});
 });

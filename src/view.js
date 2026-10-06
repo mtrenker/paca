@@ -6,7 +6,17 @@ const TOOL_LABELS = {
 	portfolio_overview: () => "Read all configured Projects",
 	read_issue: (a) => `Read ${a.repository}#${a.number}`,
 	search_issues: (a) => `Searched ${a.repository ?? "all repositories"} for “${a.query}”`,
+	draft_issue: (a) => `Drafted an issue for ${a.repository}`,
 };
+
+/** What a draft card shows. `checkUrl` is where to look when the outcome is unknown. */
+function draftCard(d) {
+	const card = { id: d.id, repository: d.repository, title: d.title, body: d.body, status: d.status };
+	if (d.url) Object.assign(card, { url: d.url, number: d.number });
+	if (d.error) card.error = d.error;
+	if (d.status === "unknown") card.checkUrl = `https://github.com/${d.repository}/issues?q=${encodeURIComponent("is:issue sort:created-desc")}`;
+	return card;
+}
 
 function text(content) {
 	if (typeof content === "string") return content;
@@ -29,13 +39,14 @@ function resultSummary(message) {
 	return first.startsWith("Captured") ? first.replace(/\s*\(closed items omitted\)\.?/, "") : "";
 }
 
-export function uiState(view, { busy } = {}) {
+export function uiState(view, { busy, drafts } = {}) {
 	const turns = [];
 	let turn;
 	const tools = new Map();
+	const turnOfCall = new Map();
 	const answer = () => {
 		if (!turn) {
-			turn = { id: "orphan", question: null, steps: [], answer: "", notices: [] };
+			turn = { id: "orphan", question: null, steps: [], answer: "", notices: [], drafts: [] };
 			turns.push(turn);
 		}
 		return turn;
@@ -45,7 +56,7 @@ export function uiState(view, { busy } = {}) {
 		const message = entry.model?.[0];
 		switch (entry.kind) {
 			case "pi.user":
-				turn = { id: String(entry.id), question: text(message.content), steps: [], answer: "", notices: [] };
+				turn = { id: String(entry.id), question: text(message.content), steps: [], answer: "", notices: [], drafts: [] };
 				turns.push(turn);
 				break;
 			case "pi.assistant": {
@@ -54,6 +65,7 @@ export function uiState(view, { busy } = {}) {
 					if (block.type === "toolCall") {
 						const step = { id: block.id, label: toolLabel(block), status: "running", detail: "" };
 						tools.set(block.id, step);
+						turnOfCall.set(block.id, t);
 						t.steps.push(step);
 					}
 				}
@@ -90,6 +102,10 @@ export function uiState(view, { busy } = {}) {
 	if (running && turn && live.generation?.retry) turn.retry = `Retrying after: ${live.generation.retry.error}`.slice(0, 240);
 	// Steps still marked running after the run ended were cut off.
 	if (!running) for (const step of tools.values()) if (step.status === "running") step.status = "interrupted";
+
+	for (const draft of Object.values(drafts?.items ?? {})) {
+		turnOfCall.get(draft.id)?.drafts.push(draftCard(draft));
+	}
 
 	return { running, turns };
 }
