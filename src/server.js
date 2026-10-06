@@ -92,7 +92,7 @@ export function createApp({ config, sessions, oidc, paca, state, info, publicDir
 			}
 			const cookies = sessions.start(claims);
 			if (!cookies) {
-				log.warn(`paca: refused sign-in for subject ${JSON.stringify(claims.sub)} from ${claims.iss}`);
+				log.warn(`paca: refused sign-in for subject ${JSON.stringify(claims.sub)} (username ${JSON.stringify(claims.preferred_username ?? null)}) from ${claims.iss}`);
 				return page(res, 403, "refused.html");
 			}
 			return send(res, 303, "", { Location: "/", "Set-Cookie": cookies });
