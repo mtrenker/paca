@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Paca</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <span class="mark">Paca</span>
+  <span class="scope" id="scope">Connecting…</span>
+  <button type="button" class="quiet" id="signout">Sign out</button>
+</header>
+<p class="link-state" id="link-state" hidden></p>
+<main id="transcript" aria-live="polite">
+  <section class="empty" id="empty" hidden>
+    <h1>Ask about your issues</h1>
+    <p>Paca reads the issues and Projects in scope and answers with links. It cannot change anything on GitHub yet.</p>
+    <button type="button" class="suggestion" data-question="What needs attention across my projects?">What needs attention across my projects?</button>
+  </section>
+</main>
+<form class="composer" id="composer">
+  <label class="visually-hidden" for="question">Question</label>
+  <textarea id="question" rows="1" maxlength="4000" placeholder="Ask about your issues" enterkeyhint="send"></textarea>
+  <button type="submit" id="send">Send</button>
+  <button type="button" id="stop" class="stop" hidden>Stop</button>
+</form>
+<p class="form-error" id="form-error" role="alert" hidden></p>
+</body>
+</html>
