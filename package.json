@@ -1,12 +1,13 @@
 {
   "name": "paca",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "engines": { "node": ">=24" },
   "scripts": {
     "start": "node src/main.js",
     "ask": "node src/ask.js",
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "@earendil-works/chord": "1.0.3",

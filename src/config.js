@@ -25,7 +25,7 @@ export async function loadConfig({ needWeb = true } = {}) {
 		for (const key of ["issuer", "clientId", "allowedSubject"]) {
 			if (typeof config.oidc?.[key] !== "string" || !config.oidc[key]) fail(`oidc.${key} is required`);
 		}
-		if (!process.env.PACA_OIDC_CLIENT_SECRET) throw new Error("PACA_OIDC_CLIENT_SECRET is not set; start Paca through pass-cli run (see README)");
+		if (!process.env.PACA_OIDC_CLIENT_SECRET) throw new Error("PACA_OIDC_CLIENT_SECRET is not set; see Configure in the README");
 	}
 	return { ...config, publicOrigin: needWeb ? new URL(config.publicUrl).origin : undefined };
 }
