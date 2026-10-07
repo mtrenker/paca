@@ -264,6 +264,34 @@ describe("deleting a session", () => {
 		assert.equal(store.list().length, 1);
 	});
 
+	it("joins a delete already running, so a session created again under the same id keeps its rows and files", async () => {
+		const gates = [];
+		const removeFile = async (path) => {
+			await new Promise((resolve) => gates.push(resolve));
+			return rm(path, { force: true });
+		};
+		const { dir, store, sessions, sent } = await user(routed({ A: [text("old"), draftCall("New draft"), text("new")] }), { removeFile });
+		const a = newId();
+		sessions.start(a, "A: old", "request-old");
+		await idle(sessions, a);
+		const [first, second] = [sessions.remove(a), sessions.remove(a)];
+		await until(() => gates.length === 1);
+		gates.shift()();
+		assert.deepEqual(await Promise.all([first, second]), [{ deleted: true }, { deleted: true }]);
+		assert.equal(gates.length, 0, "the second delete ran no cleanup of its own");
+
+		sessions.start(a, "A: new", "request-new");
+		await idle(sessions, a);
+		const draft = (await stateOf(sessions, a)).turns[0].drafts[0];
+		assert.equal((await sessions.approveDraft(a, draft.id)).status, "created");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(store.session(a).state, "active");
+		assert.equal(store.hasRequest(a, "request-new"), true);
+		assert.equal(store.draft(a, draft.id).status, "created");
+		assert.deepEqual(sessionFiles(dir).map((f) => f.endsWith(`_${a}.jsonl`)), [true]);
+		assert.equal(sent.length, 1);
+	});
+
 	it("answers an error when removing the file fails, and a second delete or the next start finishes it", async () => {
 		for (const finishBy of ["delete", "start"]) {
 			let fail = true;
@@ -275,7 +303,8 @@ describe("deleting a session", () => {
 			const a = newId();
 			first.sessions.start(a, "A: old", "request-a");
 			await idle(first.sessions, a);
-			await assert.rejects(first.sessions.remove(a), /stubbed failure/);
+			// Two deletes at once share the one failed attempt.
+			await Promise.all([assert.rejects(first.sessions.remove(a), /stubbed failure/), assert.rejects(first.sessions.remove(a), /stubbed failure/)]);
 			assert.equal(first.store.session(a).state, "deleting");
 			assert.deepEqual(first.sessions.list.current(), []);
 			assert.deepEqual(first.sessions.ask(a, "A: again", "request-a2"), { refused: "not-found" });

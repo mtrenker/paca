@@ -200,9 +200,13 @@ export function openStore(file: string) {
 		 */
 		markDeleting: (id: string) =>
 			run("UPDATE sessions SET state = 'deleting' WHERE id = ? AND state = 'active' AND NOT EXISTS (SELECT 1 FROM drafts WHERE session_id = ? AND status = 'creating')", id, id).changes === 1,
-		/** The last deletion step: the rows go, and the id is free again. */
+		/**
+		 * The last deletion step: the rows go, and the id is free again. Only while the row is still
+		 * marked: a session created again under the same id afterwards keeps its rows.
+		 */
 		deleteRows(id: string) {
 			transaction(() => {
+				if (!one("SELECT 1 FROM sessions WHERE id = ? AND state = 'deleting'", id)) return;
 				run("DELETE FROM requests WHERE session_id = ?", id);
 				run("DELETE FROM drafts WHERE session_id = ?", id);
 				run("DELETE FROM sessions WHERE id = ? AND state = 'deleting'", id);

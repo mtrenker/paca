@@ -57,6 +57,8 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 	const piDir = join(userDir, "pi");
 	for (const dir of [sessionsDir, piDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const lives = new Map<string, Live>();
+	/** Deletions in progress, by session id. */
+	const deletions = new Map<string, Promise<void>>();
 
 	// Drafts are stored under the session the calling tool runs in. Pi's session id is Paca's.
 	const proposeFor = (packageName: string): Propose => (toolCallId, ctx, proposal) => {
@@ -185,8 +187,22 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 		return Boolean(live?.busy || live?.session?.isCompacting);
 	}
 
-	/** Steps after the delete mark. Each is idempotent, so a repeated delete or a start re-runs them. */
-	async function finishDelete(id: string) {
+	/**
+	 * Steps after the delete mark. A delete that arrives while they run joins them instead of running
+	 * its own, so no cleanup outlives the id's reservation and touches a session created again under
+	 * it. After a failure nothing is running, and the next delete or start runs them again; each step
+	 * is idempotent.
+	 */
+	function finishDelete(id: string): Promise<void> {
+		let running = deletions.get(id);
+		if (!running) {
+			running = deleteSteps(id).finally(() => deletions.delete(id));
+			deletions.set(id, running);
+		}
+		return running;
+	}
+
+	async function deleteSteps(id: string) {
 		const row = store.session(id);
 		if (!row) return;
 		const live = lives.get(id);

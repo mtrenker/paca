@@ -70,4 +70,3 @@ export interface SessionSummary {
 	waiting: number;
 	lastActivity: string;
 }
-
