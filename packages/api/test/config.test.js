@@ -92,4 +92,3 @@ describe("users", () => {
 		await assert.rejects(load({ ...USERS, users, extensions: { "./local.ts": {} } }), /not an npm package name/);
 	});
 });
-

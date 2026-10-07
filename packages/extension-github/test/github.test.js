@@ -116,4 +116,3 @@ describe("credentials", () => {
 		assert.deepEqual([server.GH_TOKEN, server.GITHUB_TOKEN, server.PACA_GH_TOKEN_MARTIN], ["server", "server", undefined]);
 	});
 });
-
