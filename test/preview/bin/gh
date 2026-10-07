@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 // Fake gh for the local preview: creating an issue answers with a made-up issue, and nothing reaches
-// GitHub. Reads are not faked; they fail, and Paca shows them as unavailable.
+// GitHub. A draft whose body mentions "unknown" fails like a lost response (HTTP 502), so Paca
+// records an unknown outcome. Reads are not faked; they fail, and Paca shows them as unavailable.
 import { readFileSync } from "node:fs";
 
 const [command, ...rest] = process.argv.slice(2);
 const target = rest.find((a) => /^repos\/[\w.-]+\/[\w.-]+\/issues$/.test(a));
 if (command === "api" && rest.includes("POST") && target) {
-	const { title } = JSON.parse(readFileSync(0, "utf8"));
+	const { title, body } = JSON.parse(readFileSync(0, "utf8"));
+	if (/unknown/i.test(body)) {
+		console.error("fake gh: gh: Bad Gateway (HTTP 502)");
+		process.exit(1);
+	}
 	const number = 1000 + Math.floor(Math.random() * 9000);
 	const repository = target.slice("repos/".length, -"/issues".length);
 	console.log(JSON.stringify({ number, title, html_url: `https://github.com/${repository}/issues/${number}` }));

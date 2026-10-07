@@ -2,7 +2,7 @@
 
 The image `ghcr.io/mtrenker/paca` contains Node 24, `gh`, the pi-clean collector and Paca. It
 runs as the non-root `node` user (uid 1000). Configuration, credentials and data come in at
-runtime: the image holds no config, token, key or conversation.
+runtime: the image holds no config, token, key or session.
 
 The image is built for **linux/amd64 only**. It has been tested with Docker 29 on an x86_64 Linux
 host and in GitHub Actions. No other platform is built or tested.
@@ -32,11 +32,13 @@ Everything Paca and Pi write lives in `/data`:
 | Path | What it is |
 | --- | --- |
 | `/data/config.json` | your configuration |
-| `/data/paca.sqlite` | the operator's conversation and every issue draft with its outcome |
-| `/data/users/<id>/` | every other user's conversation and drafts, created on first start |
+| `/data/users/<id>/paca.db` | one user's session list, request ids, every issue draft with its outcome, and deletion state; the operator's too |
+| `/data/users/<id>/sessions/` | one Pi session file (`<time>_<session id>.jsonl`) per session |
+| `/data/users/<id>/legacy/` | conversations from before multiple sessions, kept after conversion (see [Upgrade](#upgrade)) |
+| `/data/users/<id>/pi/` | an empty directory Paca gives Pi for each session, so Pi discovers nothing |
 | `/data/session.key` | the key that signs session cookies, created on first start |
 | `/data/pi/` | Pi's agent directory (`PI_CODING_AGENT_DIR`): `auth.json`, `models.json`, `settings.json` |
-| `/data/github-workflow.json`, `/data/models-store.json` | generated caches |
+| `/data/users/<id>/github-workflow.json`, `/data/models-store.json` | generated caches |
 
 Use a named volume. Docker creates it owned by `node` with mode 0700. If you bind-mount a host
 directory instead, it must be owned by uid 1000 (`chown 1000:1000 <dir> && chmod 700 <dir>`).
@@ -129,7 +131,7 @@ docker rm paca      # the volume and its data stay
 ## Back up
 
 The volume holds secrets (`session.key`, possibly `pi/auth.json`), so keep backups private. Stop
-Paca first so the SQLite file is consistent:
+Paca first so the stores and session files are consistent:
 
 ```sh
 docker stop paca
@@ -153,12 +155,62 @@ docker run --rm -i -v paca-data:/data --entrypoint tar ghcr.io/mtrenker/paca:<ta
 3. `docker stop paca && docker rm paca`
 4. Start again with the new tag and the same volume.
 
-The session key, conversation and drafts carry over. Moving to multi-user support changes no
-stored data: a single-user config keeps working, and `/data/paca.sqlite` stays the operator's.
-Paca makes no promise that an older image can open data a newer one wrote, so to roll back,
-restore the backup from step 1 and start the old tag. A reset works as in the
-[README](../README.md#stop-and-reset): delete `/data/paca.sqlite` (or `/data/users/<id>/`) while
-Paca is stopped, after checking every draft whose outcome is unknown.
+The session key, sessions and drafts carry over.
+
+### Upgrading to multiple sessions
+
+Versions before multiple sessions kept one conversation per user in a Pi Durable store,
+`/data/paca.sqlite` for the operator and `/data/users/<id>/paca.sqlite` for everyone else. The
+first start of a newer image converts each store into one session before it starts listening:
+
+1. it opens and closes the store, which folds its write-ahead log into the main file;
+2. it moves the store to `/data/users/<id>/legacy/<session id>.sqlite`;
+3. it reads the transcript and drafts there into one session file;
+4. it writes the drafts, with their outcomes, and the session's row into `paca.db`.
+
+It logs one line per store, for example:
+
+```text
+paca: converted legacy store /data/paca.sqlite into session <session id>: 12 messages, 2 drafts
+paca: legacy store /data/users/alex/paca.sqlite was empty; moved to legacy/empty-<time>.sqlite
+```
+
+The old paths are empty afterwards, so the previous image, started on the same volume, finds no
+draft to approve a second time. A conversion that stops halfway (a crash, a full disk) finishes on
+the next start: the moved store is read again and nothing is converted twice. If a step fails,
+Paca stops with an error that names the file and the step; fix the cause and start again.
+
+Conversion runs before `/healthz` answers. With a large conversation it can outlast the health
+check's 30-second start period and retries, so `docker ps` may show the container as unhealthy
+for a while. `--restart unless-stopped` restarts only on exit, and a restarted conversion
+continues; watch `docker logs paca` for the lines above.
+
+`users/<id>/legacy/<session id>.sqlite` keeps the old records. To see which session came from
+which file: `sqlite3 /data/users/<id>/paca.db "select id, title, legacy_file from sessions"`.
+Deleting that session in the page also deletes its retained copy. A `paca.sqlite` on one of the
+old paths after the upgrade was written by an older image; the next start converts it into
+another session, or moves it aside if it is empty. `/data/github-workflow.json` from before the
+upgrade is an unused cache now and can be deleted.
+
+A session that cannot be opened, for example because its file was edited by hand, shows
+"Paca could not open this session" on the page; `docker logs paca` has the line
+`paca: session <session id>: ...` with the cause.
+
+### Rolling back
+
+Paca makes no promise that an older image can open data a newer one wrote. To roll back, stop
+Paca, restore the backup from step 1 into an empty volume and start the old tag. Everything done
+after that backup is gone, including approvals: a draft you created on GitHub after the backup is
+back to proposed in the restored data, and Paca cannot know that it was created. Before you
+approve any draft after restoring a backup, search the draft's repository on GitHub for its title.
+The same holds for restoring any backup, in any version.
+
+### Reset
+
+To delete one session, use **Delete** in the page. To start over for one user, stop Paca and
+delete `/data/users/<id>/`. Either way the record of every draft and its outcome goes too, so
+first check on GitHub every draft whose outcome is unknown, and note the links of created issues.
+See also the [README](../README.md#stop-and-reset).
 
 ## Test the image
 
@@ -175,12 +227,14 @@ throwaway certificate and data. It checks:
 - without a session, `/` redirects to sign-in and the chat and draft endpoints answer 401;
 - another subject is refused, the allowed one signs in;
 - a wrong `Origin` or CSRF token is refused;
-- a question gets an answer with one proposed draft;
+- a question starts a session and gets an answer with one proposed draft; the session list
+  shows it with one draft waiting;
 - `docker stop` exits 0 within the grace period, and the secrets never appear in the logs;
-- a new container on the same volume keeps the session key, the conversation and the draft;
-- with a users config and a fake Herdr socket mounted read-only, the operator's question lists
-  agents and proposes a prompt, approving it sends that exact text once, a second approval is
-  refused, and the prompt does not appear in the logs.
+- a new container on the same volume keeps the session key, the session and the draft;
+- with a users config and a fake Herdr socket mounted read-only, the operator's question in a new
+  session lists agents and proposes a prompt; approving it under another session is refused (404),
+  approving it in its own session sends that exact text once, a second approval is refused, and
+  the prompt does not appear in the logs.
 
 It does not call GitHub: the fake model only drafts, and nobody approves the GitHub draft. The
 Herdr socket is a fake on the host (`fake-herdr.mjs`) that records prompts and types nothing.
@@ -233,7 +287,7 @@ docker --config "$(mktemp -d)" pull ghcr.io/mtrenker/paca:latest
   reach Paca. Without `PACA_HOST`, Paca still binds to `127.0.0.1`. Sign-in, the `Origin` and
   CSRF checks and draft approval are unchanged, and the container adds no route; the health
   check uses the existing `/healthz`, which answers `ok` and nothing else.
-- **One volume:** config, SQLite, session key and Pi's directory share `/data`, so one volume is
+- **One volume:** config, stores, session files, session key and Pi's directory share `/data`, so one volume is
   the whole state to back up. The session key must survive a new container, or every session
   ends. Pi's directory must be writable for OAuth refreshes.
 - **Init:** `tini` is PID 1. It forwards `SIGTERM` to Node and reaps `gh` processes left behind

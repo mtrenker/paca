@@ -7,7 +7,7 @@
 // paca-smoke-<run id> and removed at the end.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,9 +106,9 @@ async function signIn(base, sub) {
 	return fetch(callback, { redirect: "manual", headers: { cookie: cookieOf(login) } });
 }
 
-/** Reads the SSE stream until a state satisfies `done`. */
-async function waitForState(base, cookie, done) {
-	const response = await fetch(`${base}/api/events`, { headers: { cookie }, signal: AbortSignal.timeout(60_000) });
+/** Reads the open session's SSE stream until an event satisfies `done(event, data)`. */
+async function waitFor(base, cookie, session, done) {
+	const response = await fetch(`${base}/api/events?session=${session}`, { headers: { cookie }, signal: AbortSignal.timeout(60_000) });
 	assert.equal(response.status, 200);
 	const decoder = new TextDecoder();
 	let buffer = "";
@@ -116,21 +116,22 @@ async function waitForState(base, cookie, done) {
 		buffer += decoder.decode(chunk, { stream: true });
 		let end;
 		while ((end = buffer.indexOf("\n\n")) >= 0) {
-			const event = buffer.slice(0, end);
+			const lines = buffer.slice(0, end).split("\n");
 			buffer = buffer.slice(end + 2);
-			const data = event.split("\n").find((l) => l.startsWith("data: "));
+			const event = lines.find((l) => l.startsWith("event: "))?.slice(7);
+			const data = lines.find((l) => l.startsWith("data: "));
 			if (!data) continue;
-			const state = JSON.parse(data.slice(6));
-			if (done(state)) {
+			const value = JSON.parse(data.slice(6));
+			if (done(event, value)) {
 				response.body.cancel().catch(() => {});
-				return state;
+				return value;
 			}
 		}
 	}
 	throw new Error("event stream ended");
 }
 
-const answeredWithDraft = (question) => (state) => !state.running && state.turns.some((t) => t.question === question && t.answer && t.drafts.length === 1);
+const answeredWithDraft = (question) => (event, state) => event === "state" && !state.running && state.turns.some((t) => t.question === question && t.answer && t.drafts.length === 1);
 const answered = answeredWithDraft("Smoke question");
 
 /** Replaces /data/config.json, as an operator would with the copy command in docs/container.md. */
@@ -144,8 +145,9 @@ async function writeConfig(config) {
 /**
  * The operator moves to a users config with Herdr. The fake Herdr socket is bind-mounted read-only
  * like the real one (docs/herdr.md); mode 0666 only because CI's host user is not uid 1000.
+ * `earlier` is the session the first containers answered, which must not reach the new card.
  */
-async function checkHerdr(tls, cookie) {
+async function checkHerdr(tls, cookie, earlier) {
 	const herdr = await startFakeHerdr({ path: join(tls, "herdr.sock"), mode: 0o666 });
 	try {
 		await writeConfig({
@@ -156,22 +158,25 @@ async function checkHerdr(tls, cookie) {
 			users: [{ id: "operator", subject: SUBJECT, operator: true, github: { projects: [{ owner: "example", number: 1, repository: "example/repo" }], serverLogin: true }, herdr: { roots: ["/home/preview/code"] } }],
 		});
 		const app = await startApp(tls, ["-v", `${herdr.path}:/run/herdr.sock:ro`]);
-		const session = await (await fetch(`${app.base}/api/session`, { headers: { cookie } })).json();
-		assert.match(session.scope, /Herdr agents/);
-		const post = (path, body) => fetch(`${app.base}${path}`, { method: "POST", headers: { cookie, origin: ORIGIN, "x-csrf-token": session.csrf, "content-type": "application/json" }, body: JSON.stringify(body) });
-		assert.equal((await post("/api/messages", { text: "Smoke agent question", requestId: `smoke-agent-${run}` })).status, 202);
-		const state = await waitForState(app.base, cookie, answeredWithDraft("Smoke agent question"));
+		const info = await (await fetch(`${app.base}/api/session`, { headers: { cookie } })).json();
+		assert.match(info.scope, /Herdr agents/);
+		const post = (path, body) => fetch(`${app.base}${path}`, { method: "POST", headers: { cookie, origin: ORIGIN, "x-csrf-token": info.csrf, "content-type": "application/json" }, body: JSON.stringify(body) });
+		const session = randomUUID();
+		assert.equal((await post("/api/sessions", { id: session, text: "Smoke agent question", requestId: `smoke-agent-${run}` })).status, 202);
+		const state = await waitFor(app.base, cookie, session, answeredWithDraft("Smoke agent question"));
 		const card = state.turns.find((t) => t.question === "Smoke agent question").drafts[0];
 		assert.deepEqual([card.action, card.target, card.title, card.body, card.status], ["herdr.send_prompt", "claude in w1:p1", SAMPLE_AGENTS[0].cwd, FAKE_PROMPT, "proposed"]);
 		assert.deepEqual(herdr.prompts, []);
-		step("operator in a users config: Herdr agents listed through the read-only socket mount, prompt proposed, nothing sent");
+		step("operator in a users config: Herdr agents listed through the read-only socket mount, prompt proposed in a new session, nothing sent");
 
-		assert.deepEqual(await (await post("/api/drafts/approve", { id: card.id })).json(), { status: "created" });
-		assert.equal((await post("/api/drafts/approve", { id: card.id })).status, 409);
+		assert.equal((await post(`/api/sessions/${earlier}/drafts/approve`, { id: card.id })).status, 404);
+		assert.deepEqual(herdr.prompts, []);
+		assert.deepEqual(await (await post(`/api/sessions/${session}/drafts/approve`, { id: card.id })).json(), { status: "created" });
+		assert.equal((await post(`/api/sessions/${session}/drafts/approve`, { id: card.id })).status, 409);
 		assert.deepEqual(herdr.prompts, [{ pane: "w1:p1", terminal: "term_fake01", text: FAKE_PROMPT }]);
 		const logs = await exec("docker", ["logs", app.name]).then((r) => r.stdout + r.stderr);
 		assert.ok(!logs.includes(FAKE_PROMPT), "the prompt appeared in the logs");
-		step("approved prompt sent once with the exact text; a second approval refused (409); prompt not in the logs");
+		step("approval under another session refused (404); approved prompt sent once with the exact text; a second approval refused (409); prompt not in the logs");
 		await stopApp(app.name);
 	} finally {
 		await herdr.close();
@@ -196,11 +201,12 @@ async function main() {
 		const page = await fetch(`${first.base}/`, { redirect: "manual" });
 		assert.equal(page.status, 302);
 		assert.equal(page.headers.get("location"), "/auth/login");
-		for (const [method, path] of [["GET", "/api/session"], ["GET", "/api/events"], ["POST", "/api/messages"], ["POST", "/api/drafts/approve"], ["POST", "/api/stop"]]) {
+		const session = randomUUID();
+		for (const [method, path] of [["GET", "/api/session"], ["GET", "/api/events"], ["POST", "/api/sessions"], ["POST", `/api/sessions/${session}/messages`], ["POST", `/api/sessions/${session}/drafts/approve`], ["POST", `/api/sessions/${session}/delete`]]) {
 			const response = await fetch(`${first.base}${path}`, { method, headers: { origin: ORIGIN, "content-type": "application/json" }, body: method === "POST" ? "{}" : undefined });
 			assert.equal(response.status, 401, `${method} ${path} without a session`);
 		}
-		step("without a session: / redirects to sign-in, chat and draft endpoints answer 401");
+		step("without a session: / redirects to sign-in, session and draft endpoints answer 401");
 
 		const refused = await signIn(first.base, "someone-else");
 		assert.equal(refused.status, 403);
@@ -208,30 +214,35 @@ async function main() {
 		const signedIn = await signIn(first.base, SUBJECT);
 		assert.equal(signedIn.status, 303);
 		const cookie = cookieOf(signedIn);
-		const session = await (await fetch(`${first.base}/api/session`, { headers: { cookie } })).json();
-		assert.equal(session.model, "fake/fake-model");
+		const info = await (await fetch(`${first.base}/api/session`, { headers: { cookie } })).json();
+		assert.equal(info.model, "fake/fake-model");
 		step("OIDC through the fake provider: other subject refused (403), allowed subject signed in");
 
-		const ask = (origin, csrf) =>
-			fetch(`${first.base}/api/messages`, { method: "POST", headers: { cookie, origin, "x-csrf-token": csrf, "content-type": "application/json" }, body: JSON.stringify({ text: "Smoke question", requestId: `smoke-${run}` }) });
-		assert.equal((await ask("https://elsewhere.test", session.csrf)).status, 403);
-		assert.equal((await ask(ORIGIN, "wrong-token-wrong-token-wrong-to")).status, 403);
-		assert.equal((await ask(ORIGIN, session.csrf)).status, 202);
-		const state = await waitForState(first.base, cookie, answered);
+		const post = (path, body, origin = ORIGIN, csrf = info.csrf) =>
+			fetch(`${first.base}${path}`, { method: "POST", headers: { cookie, origin, "x-csrf-token": csrf, "content-type": "application/json" }, body: JSON.stringify(body) });
+		const start = { id: session, text: "Smoke question", requestId: `smoke-${run}` };
+		assert.equal((await post("/api/sessions", start, "https://elsewhere.test")).status, 403);
+		assert.equal((await post("/api/sessions", start, ORIGIN, "wrong-token-wrong-token-wrong-to")).status, 403);
+		assert.equal((await post("/api/sessions", { ...start, id: "../legacy" })).status, 400);
+		assert.equal((await post("/api/messages", { text: "Smoke question", requestId: `smoke-old-${run}` })).status, 410);
+		assert.equal((await post("/api/sessions", start)).status, 202);
+		const state = await waitFor(first.base, cookie, session, answered);
 		const draft = state.turns.find((t) => t.question === "Smoke question").drafts[0];
 		assert.equal(draft.status, "proposed");
-		step("wrong Origin and CSRF refused (403); question answered by the fake model with one proposed draft");
+		const list = await waitFor(first.base, cookie, session, (event, value) => event === "sessions" && value.some((s) => s.id === session && s.waiting === 1 && !s.running));
+		assert.equal(list.length, 1);
+		step("wrong Origin and CSRF refused (403), bad id (400), old route (410); a new session answered by the fake model with one proposed draft waiting");
 
 		await stopApp(first.name);
 		await docker("rm", first.name);
 		const second = await startApp(tls);
 		const again = await fetch(`${second.base}/api/session`, { headers: { cookie } });
 		assert.equal(again.status, 200, "the session from the first container should still be valid");
-		const kept = await waitForState(second.base, cookie, answered);
+		const kept = await waitFor(second.base, cookie, session, answered);
 		assert.deepEqual(kept.turns.find((t) => t.question === "Smoke question").drafts[0], draft);
-		step(`new container ${second.name} on the same volume: session key, conversation and draft kept`);
+		step(`new container ${second.name} on the same volume: session key, session and draft kept`);
 		await stopApp(second.name);
-		await checkHerdr(tls, cookie);
+		await checkHerdr(tls, cookie, session);
 		step("passed");
 	} catch (error) {
 		for (const name of [...apps, names.fakes]) {

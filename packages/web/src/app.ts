@@ -1,50 +1,164 @@
-// The Paca page: renders the server's conversation state and sends questions.
+// The Paca page: the user's saved sessions, the open session's transcript, and questions.
+// The open session is ?session=<id> in the URL; without one, the next question starts a new session.
 // Model text becomes DOM nodes through a small Markdown subset; nothing is parsed as HTML.
-import type { DraftCard, PageState, SessionInfo, Turn } from "@paca/contracts";
+import type { DraftCard, PageState, SessionInfo, SessionSummary, Turn } from "@paca/contracts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-let session: SessionInfo;
-let state: PageState = { running: false, turns: [] };
+const EMPTY: PageState = { running: false, turns: [] };
+let info: SessionInfo;
+/** The open session; undefined on New session or the phone's list. */
+let current: string | undefined;
+let sessions: SessionSummary[] = [];
+let state: PageState = EMPTY;
+let source: EventSource | undefined;
 
 const STEP_STATUS: Record<string, string> = { running: "Working", unavailable: "Unavailable", interrupted: "Interrupted" };
 
 async function start() {
 	const response = await fetch("/api/session");
 	if (response.status === 401) return location.assign("/auth/login");
-	session = await response.json();
-	$("scope").textContent = `${session.scope} · ${session.model}`;
-	$("scope").title = session.scopeDetail;
+	info = await response.json();
+	$("scope").textContent = `${info.scope} · ${info.model}`;
+	$("scope").title = info.scopeDetail;
+	readUrl();
 	connect();
+	render();
 }
 
+/** ?session=<id> opens a session; ?new is New session; neither is the list (on a phone). */
+function readUrl() {
+	const params = new URLSearchParams(location.search);
+	current = params.get("session") ?? undefined;
+	document.body.className = current || params.has("new") ? "view-session" : "view-list";
+}
+
+function go(href: string, replace = false) {
+	if (href === location.pathname + location.search) return;
+	history[replace ? "replaceState" : "pushState"](null, "", href);
+	readUrl();
+	state = EMPTY;
+	connect();
+	render();
+	scrollTo(0, 0);
+}
+addEventListener("popstate", () => {
+	readUrl();
+	state = EMPTY;
+	connect();
+	render();
+});
+
+/** One stream: the session list always, and the open session's state until it is deleted. */
 function connect() {
-	const source = new EventSource("/api/events");
-	source.addEventListener("state", (event: MessageEvent<string>) => {
-		$("link-state").hidden = true;
+	source?.close();
+	const stream = new EventSource(current ? `/api/events?session=${encodeURIComponent(current)}` : "/api/events");
+	source = stream;
+	const live = () => ($("link-state").hidden = true);
+	stream.addEventListener("sessions", (event: MessageEvent<string>) => {
+		live();
+		sessions = JSON.parse(event.data);
+		renderList();
+	});
+	stream.addEventListener("state", (event: MessageEvent<string>) => {
+		live();
 		state = JSON.parse(event.data);
 		render();
 	});
-	source.onerror = async () => {
+	stream.addEventListener("gone", () => {
+		stream.close();
+		leave("This session was deleted.");
+	});
+	stream.onerror = async () => {
+		if (source !== stream) return;
 		$("link-state").hidden = false;
 		$("link-state").textContent = "Connection lost. Reconnecting…";
-		if (source.readyState === EventSource.CLOSED) {
-			const check = await fetch("/api/session").catch(() => undefined);
-			if (check?.status === 401) return location.assign("/auth/login");
-			setTimeout(connect, 2000);
+		if (stream.readyState !== EventSource.CLOSED) return;
+		const check = await fetch("/api/session").catch(() => undefined);
+		if (check?.status === 401) return location.assign("/auth/login");
+		// The server refuses a stream for a session that is not (or no longer) this user's.
+		if (check?.ok && current && !sessions.some((s) => s.id === current)) {
+			$("link-state").hidden = true;
+			return leave("That session no longer exists.");
 		}
+		setTimeout(() => source === stream && connect(), 2000);
 	};
+}
+
+/** Back to the list, after the open session was deleted here or elsewhere. */
+function leave(message: string) {
+	if (!current) return;
+	go("/", true);
+	showStatus(message);
+	// The control that had focus is gone with the session.
+	$("new-session").focus();
 }
 
 function render() {
 	const main = $("transcript");
 	const nearBottom = innerHeight + scrollY >= document.body.scrollHeight - 120;
 	for (const node of [...main.querySelectorAll(".turn")]) node.remove();
-	$("empty").hidden = state.turns.length > 0;
-	for (const turn of state.turns) main.append(renderTurn(turn, turn === state.turns.at(-1)));
+	$("session-head").hidden = !current;
+	$("session-title").textContent = titleOf(current);
+	$("empty").hidden = Boolean(current);
+	if (current) for (const turn of state.turns) main.append(renderTurn(turn, turn === state.turns.at(-1)));
 	$("send").hidden = state.running;
 	$("stop").hidden = !state.running;
-	if (nearBottom) scrollTo(0, document.body.scrollHeight);
+	const deletable = !state.running && !drafts().some((d) => d.status === "creating");
+	$<HTMLButtonElement>("delete").disabled = !deletable;
+	$("delete").title = deletable ? "" : "Wait for the answer or the issue being created, or stop it, then delete.";
+	renderList();
+	if (nearBottom && current) scrollTo(0, document.body.scrollHeight);
 }
+
+const titleOf = (id: string | undefined) => sessions.find((s) => s.id === id)?.title ?? state.turns.find((t) => t.question && t.id !== "earlier-drafts")?.question ?? "";
+const drafts = () => state.turns.flatMap((t) => t.drafts);
+
+function renderList() {
+	const list = $("session-list");
+	list.replaceChildren(...sessions.map(renderSession));
+	$("sessions-empty").hidden = sessions.length > 0;
+	$("new-session").setAttribute("aria-current", !current && document.body.className === "view-session" ? "page" : "false");
+	// On a phone the list is a screen away; the dot says another session needs a look.
+	const elsewhere = sessions.filter((s) => s.id !== current && (s.running || s.waiting > 0));
+	$("back-dot").hidden = elsewhere.length === 0;
+	$("back").setAttribute("aria-label", elsewhere.length ? `Sessions, ${elsewhere.length} answering or waiting` : "Sessions");
+	if (current) $("session-title").textContent = titleOf(current);
+}
+
+function renderSession(s: SessionSummary) {
+	const item = el("li");
+	const a = el("a", "session");
+	a.href = `/?session=${s.id}`;
+	if (s.id === current) a.setAttribute("aria-current", "page");
+	a.append(el("span", "session-title", s.title));
+	const meta = el("span", "session-meta");
+	if (s.running) meta.append(el("span", "running", "Answering"));
+	if (s.waiting > 0) meta.append(el("span", "waiting", s.waiting === 1 ? "1 draft waiting" : `${s.waiting} drafts waiting`));
+	meta.append(el("span", "when", when(s.lastActivity)));
+	a.append(meta);
+	item.append(a);
+	return item;
+}
+
+const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+function when(iso: string) {
+	const at = new Date(iso);
+	const minutes = (Date.now() - at.getTime()) / 60_000;
+	if (minutes < 1) return "just now";
+	if (minutes < 60) return `${Math.round(minutes)} min ago`;
+	return at.toDateString() === new Date().toDateString() ? timeFormat.format(at) : dayFormat.format(at);
+}
+
+// In-page navigation for plain clicks; modified clicks open a new tab as links do.
+document.addEventListener("click", (event) => {
+	const a = (event.target as HTMLElement).closest?.("a");
+	if (!a || a.target || a.origin !== location.origin || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+	if (!(a.matches(".session, #new-session, #back"))) return;
+	event.preventDefault();
+	go(a.pathname + a.search);
+	if (a.id === "new-session") $("question").focus();
+});
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
 	const node = document.createElement(tag);
@@ -106,6 +220,7 @@ const ISSUE: CardWords = {
 	dismissed: "Nothing was created.",
 };
 
+const PROMPT_ACTION = "herdr.send_prompt";
 const PROMPT: CardWords = {
 	kicker: { proposed: "Prompt for an agent", creating: "Sending prompt…", created: "Prompt submitted", failed: "Not sent", unknown: "Outcome unknown", dismissed: "Dismissed" },
 	approve: "Send prompt",
@@ -122,7 +237,7 @@ const pendingDrafts = new Set<string>();
 // A proposed write, shown exactly as it would be performed: plain text, nothing interpreted.
 // An issue shows its repository, title and body; a prompt its agent, directory and exact text.
 function renderDraft(draft: DraftCard) {
-	const prompt = draft.action === "herdr.send_prompt";
+	const prompt = draft.action === PROMPT_ACTION;
 	const words = prompt ? PROMPT : ISSUE;
 	const kicker = words.kicker[draft.status] ?? draft.status;
 	const card = el("article", `draft-card ${draft.status}`);
@@ -159,11 +274,12 @@ function renderDraft(draft: DraftCard) {
 }
 
 async function decide(id: string, action: "approve" | "dismiss") {
+	if (!current) return;
 	showError("");
 	pendingDrafts.add(id);
 	render();
 	try {
-		const response = await post(`/api/drafts/${action}`, { id });
+		const response = await post(`/api/sessions/${current}/drafts/${action}`, { id });
 		if (!response.ok && response.status !== 409) showError((await response.json().catch(() => ({}))).error ?? "That didn’t work.");
 	} catch {
 		showError("Could not reach Paca. Reload to see what happened before trying again.");
@@ -172,6 +288,54 @@ async function decide(id: string, action: "approve" | "dismiss") {
 		render();
 	}
 }
+
+// Deleting is permanent, so the confirmation names what Paca forgets: the issues it created or
+// may have created stay on GitHub, and prompts stay typed, but their records are gone with the session.
+function confirmDelete() {
+	const all = drafts();
+	const created = all.filter((d) => d.status === "created");
+	const unknown = all.filter((d) => d.status === "unknown");
+	const proposed = all.filter((d) => d.status === "proposed").length;
+	const turns = state.turns.filter((t) => t.question && t.id !== "earlier-drafts").length;
+	let what = `“${titleOf(current)}”, its ${turns === 1 ? "question and answer" : `${turns} questions and answers`} and its drafts are removed from Paca.`;
+	if (proposed) what += proposed === 1 ? " The draft waiting for a decision is not created." : ` The ${proposed} drafts waiting for a decision are not created.`;
+	$("confirm-what").textContent = what;
+	const issues = $("confirm-issues");
+	issues.replaceChildren();
+	if (created.length || unknown.length) {
+		issues.append(el("p", "", "Paca keeps no record of these after the session is deleted. Note anything you need first:"));
+		const list = el("ul", "confirm-list");
+		for (const d of created) {
+			const li = el("li");
+			if (d.action === PROMPT_ACTION) li.append(`Prompt submitted to ${d.target}`);
+			else li.append(link(d.url ?? "", `${d.target}#${d.number}`), ` ${d.title}`);
+			list.append(li);
+		}
+		for (const d of unknown) {
+			const li = el("li", "unknown");
+			if (d.action === PROMPT_ACTION) li.append(`Prompt to ${d.target}: outcome unknown.`);
+			else li.append(`${d.title}: outcome unknown. `, link(d.checkUrl ?? "", `Check ${d.target} issues`));
+			list.append(li);
+		}
+		issues.append(list);
+	}
+	$<HTMLDialogElement>("confirm-delete").showModal();
+}
+
+$("delete").addEventListener("click", confirmDelete);
+$("confirm-delete").addEventListener("close", async () => {
+	const dialog = $<HTMLDialogElement>("confirm-delete");
+	if (dialog.returnValue !== "delete" || !current) return;
+	dialog.returnValue = "";
+	showError("");
+	try {
+		const response = await post(`/api/sessions/${current}/delete`);
+		if (response.ok) leave("Session deleted.");
+		else showError((await response.json().catch(() => ({}))).error ?? "Could not delete the session.");
+	} catch {
+		showError("Could not reach Paca. Reload to see whether the session was deleted.");
+	}
+});
 
 // Markdown subset: headings, ordered and unordered lists, paragraphs, bold, inline code, links.
 type Paragraph = HTMLElement & { isItem?: boolean };
@@ -251,7 +415,7 @@ function link(href: string, label: string) {
 async function post(path: string, body?: unknown) {
 	const response = await fetch(path, {
 		method: "POST",
-		headers: { "Content-Type": "application/json", "X-CSRF-Token": session.csrf },
+		headers: { "Content-Type": "application/json", "X-CSRF-Token": info.csrf },
 		body: JSON.stringify(body ?? {}),
 	});
 	if (response.status === 401) location.assign("/auth/login");
@@ -263,18 +427,30 @@ function showError(message: string) {
 	$("form-error").hidden = !message;
 }
 
+let statusTimer: number | undefined;
+function showStatus(message: string) {
+	$("link-state").textContent = message;
+	$("link-state").hidden = false;
+	clearTimeout(statusTimer);
+	statusTimer = setTimeout(() => ($("link-state").hidden = true), 5000);
+}
+
+/** Asks in the open session, or starts a new one with this question. */
 async function ask(text: string) {
 	showError("");
 	const requestId = crypto.randomUUID();
+	const id = current ?? crypto.randomUUID();
+	const [path, body] = current ? [`/api/sessions/${id}/messages`, { text, requestId }] : ["/api/sessions", { id, text, requestId }];
 	$<HTMLButtonElement>("send").disabled = true;
 	try {
-		// A retry with the same request id is answered once, so a flaky network cannot ask twice.
-		let response = await post("/api/messages", { text, requestId }).catch(() => undefined);
-		if (!response) response = await post("/api/messages", { text, requestId });
+		// A retry with the same ids is answered once, so a flaky network cannot ask twice.
+		let response = await post(path, body).catch(() => undefined);
+		if (!response) response = await post(path, body);
 		if (!response.ok) {
 			showError((await response.json().catch(() => ({}))).error ?? "Could not send the question.");
 			return false;
 		}
+		if (!current) go(`/?session=${id}`, true);
 		return true;
 	} catch {
 		showError("Could not reach Paca. Check the connection and try again.");
@@ -305,7 +481,7 @@ const resize = () => {
 	q.style.height = `${q.scrollHeight}px`;
 };
 $("question").addEventListener("input", resize);
-$("stop").addEventListener("click", () => post("/api/stop"));
+$("stop").addEventListener("click", () => current && post(`/api/sessions/${current}/stop`));
 for (const button of document.querySelectorAll<HTMLButtonElement>(".suggestion")) {
 	button.addEventListener("click", () => ask(button.dataset.question ?? ""));
 }

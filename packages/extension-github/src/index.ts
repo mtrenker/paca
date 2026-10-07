@@ -2,7 +2,7 @@
 // the user approves. Each user brings their own repository scope and credential. How to rank work
 // or phrase answers is the host's persona, not part of these tools.
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool, section } from "@earendil-works/pi-durable";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import { defineToolPackage, type Propose, type UserTools } from "@paca/extension";
 import { createGitHub, type GitHub, type Project, WriteRejected } from "./github.ts";
 
@@ -22,7 +22,7 @@ export interface GitHubUserSettings {
 
 const TITLE_MAX = 256;
 const BODY_MAX = 20_000;
-const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: undefined });
 
 function checkUserSettings(id: string, settings: GitHubUserSettings): string | undefined {
 	const fail = (message: string): never => {
@@ -53,7 +53,7 @@ export function githubTools(github: GitHubAccess, propose: Propose): UserTools {
 	const projects = github.projects.map((p) => `- ${p.repository} (Project ${p.owner}/${p.number})`).join("\n");
 	return {
 		tools: tools(github, propose),
-		sections: [section("github-scope", () => `GitHub scope (nothing else can be read):\n${projects}`, { tag: false })],
+		prompt: `GitHub scope (nothing else can be read):\n${projects}`,
 		labels: {
 			portfolio_overview: { label: () => "Read all configured Projects", detail: (result) => (result.startsWith("Captured") ? result.split("\n")[0].replace(/\s*\(closed items omitted\)\.?/, "") : "") },
 			read_issue: { label: (a) => `Read ${a.repository}#${a.number}` },
@@ -81,39 +81,39 @@ function tools(github: GitHubAccess, propose: Propose) {
 	return [
 		defineTool({
 			name: "portfolio_overview",
+			label: "Projects overview",
 			description: "Read every open issue and pull request in the configured repositories with Project status, priority, size, labels, parent, blockers, last update and deterministic findings (stale, missing fields, open blockers). Takes about 20 seconds.",
 			parameters: Type.Object({}),
-			replay: "safe",
 			execute: async () => text(await github.overview()),
 		}),
 		defineTool({
 			name: "read_issue",
+			label: "Read issue",
 			description: "Read one issue with its body and recent comments.",
 			parameters: Type.Object({ repository: Type.String({ description: "owner/name" }), number: Type.Integer({ minimum: 1 }) }),
-			replay: "safe",
-			execute: async (args) => text(await github.readIssue(args.repository, args.number)),
+			execute: async (_id, args) => text(await github.readIssue(args.repository, args.number)),
 		}),
 		defineTool({
 			name: "search_issues",
+			label: "Search issues",
 			description: "Search issues and pull requests by words in the configured repositories, optionally one repository.",
 			parameters: Type.Object({ query: Type.String({ maxLength: 200 }), repository: Type.Optional(Type.String({ description: "owner/name" })) }),
-			replay: "safe",
-			execute: async (args) => text(await github.searchIssues(args.query, args.repository)),
+			execute: async (_id, args) => text(await github.searchIssues(args.query, args.repository)),
 		}),
 		defineTool({
 			name: "draft_issue",
+			label: "Draft issue",
 			description: "Propose a new issue in a configured repository. Shows the user a card with the exact repository, title and body; they create or dismiss it. Does not create anything.",
 			parameters: Type.Object({
 				repository: Type.String({ description: "owner/name" }),
 				title: Type.String({ minLength: 1, maxLength: TITLE_MAX }),
 				body: Type.String({ maxLength: BODY_MAX, description: "GitHub Markdown" }),
 			}),
-			replay: "safe",
-			execute: async (args, api, context) => {
+			execute: async (toolCallId, args, _signal, _onUpdate, ctx) => {
 				const repository = github.checkRepository(args.repository);
 				const title = args.title.trim();
 				if (!title) throw new Error("title must not be empty");
-				await propose(api, context, { action: "create_issue", target: repository, title, body: args.body });
+				propose(toolCallId, ctx, { action: "create_issue", target: repository, title, body: args.body });
 				return text(`Draft for ${repository} shown to the user with Create and Dismiss. It is not created unless they approve it.`);
 			},
 		}),

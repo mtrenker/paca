@@ -63,6 +63,7 @@ const fakes = startFakes({
 	host: "127.0.0.1",
 	tls: { key: readFileSync(join(tlsDir, "key.pem")), cert: readFileSync(join(tlsDir, "cert.pem")) },
 	login: { origin: `https://localhost:${loginPort}`, port: loginPort, users: USERS.map((u) => ({ sub: u.sub, username: u.username })) },
+	modelDelayMs: 4000,
 });
 
 // The operator's Herdr: two agents in /home/preview/code and one outside the scope.

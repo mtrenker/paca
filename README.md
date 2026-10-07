@@ -7,20 +7,25 @@ A real model answers from the issues it actually read, with links. When you ask 
 Paca drafts it on a card, and the issue is created only when you tap **Create issue**.
 
 Paca is experimental. It admits only the accounts listed in its config, runs as one local
-process, and depends on Pi Durable 1.0.3, which is itself experimental.
+process, and depends on the Pi SDK (pi-coding-agent 1.0.3), which changes often.
 
 ## What works today
 
 - Sign-in through an OIDC provider (tested with authentik). Only the subjects of configured users
   get a session; every other account is refused.
-- Each user has their own conversation, drafts, GitHub scope and GitHub credential. Nobody sees
-  or decides another user's conversation or drafts.
+- Each user has their own sessions, drafts, GitHub scope and GitHub credential. Nobody sees
+  or decides another user's sessions or drafts.
 - Questions about the open issues and pull requests in the configured GitHub Projects, answered
   with links. Answers come from what the tools read, and data that could not be read is reported
   as unavailable.
 - Issue drafts for a configured repository: repository, title and body. **Create issue** creates
   exactly the text on the card; **Dismiss** creates nothing.
-- One conversation per user that persists across reloads, devices and restarts.
+- Several saved sessions per user. **New session** starts one with its first question; the list
+  shows each session with **Answering** while it answers and the number of drafts waiting.
+  Sessions answer at the same time, each with its own Stop and limits, and persist across
+  reloads, devices and restarts. **Delete** removes a session for good, after a confirmation that
+  lists the issues it created or may have created (and, for the operator, the prompts it sent or
+  may have sent).
 - For the operator only, optionally: the coding agents running in their
   [Herdr](https://herdr.dev), in configured directories. Paca lists them, reads what one shows on
   screen, and proposes an exact prompt on a card; **Send prompt** types it into that agent once.
@@ -35,9 +40,11 @@ priority ([#6](https://github.com/mtrenker/paca/issues/6)).
 - **Sign-in:** Paca is an OIDC client using the authorization code flow with PKCE. Sessions are
   signed `__Host-` cookies valid for 12 hours. Every POST needs the right `Origin` and a CSRF
   token.
-- **Conversation:** [Pi Durable](https://www.npmjs.com/package/@earendil-works/pi-durable) keeps
-  each user's conversation and issue drafts in their own SQLite file. Prompts are POSTs; the page
-  receives the whole conversation state over SSE, and a reconnect starts from a fresh snapshot.
+- **Sessions:** each session is a Pi SDK session (`AgentSession`), saved as one JSONL file you can
+  read with `jq` or open with `pi --session <file>`. A small SQLite store per user, `paca.db`,
+  holds the session list, request ids, drafts and deletion state. Questions are POSTs; the page
+  receives the session list and the open session's whole state over SSE, and a reconnect starts
+  from a fresh snapshot.
 - **Code:** an npm workspace of TypeScript packages: the API, the page, shared types, the tool
   package contract and the GitHub tool package. [Architecture](docs/architecture.md) records the
   decisions behind the split, user isolation and tool packages.
@@ -45,8 +52,10 @@ priority ([#6](https://github.com/mtrenker/paca/issues/6)).
   `models.json` and default model as the `pi` CLI, so any provider Pi supports should work,
   including Anthropic, OpenAI and llama.cpp. Paca has been tried only with Pi's `openai-codex`
   provider.
-- **Tools:** tool packages enabled in the config give the model its tools. The GitHub package
-  gives four tools and no shell, file or generic API access:
+- **Tools:** tool packages enabled in the config give the model its tools, and nothing else does:
+  Pi's coding tools are off, and Pi discovers no extensions, skills, prompt templates, context
+  files or settings on disk. The system prompt is Paca's own. The GitHub package gives four tools
+  and no shell, file or generic API access:
   - `portfolio_overview` reads the configured Projects through pi-clean's `github-planning.mjs`
     `snapshot` and `groom`;
   - `read_issue` reads one issue with its comments;
@@ -57,29 +66,38 @@ priority ([#6](https://github.com/mtrenker/paca/issues/6)).
   with fixed arguments, without a shell, as that user.
 - **Creating an issue:** **Create issue** sends only the draft's id. The server creates the stored
   draft of the signed-in user with one `gh api --method POST repos/<owner>/<repo>/issues`, with
-  that user's GitHub credential. It claims the draft in a
-  single Durable commit first, so repeated taps, a second device or a reconnect cannot send it
-  twice. The outcome is one of:
+  that user's GitHub credential. It claims the draft with one conditional update in `paca.db`
+  first, so repeated taps, a second device or a reconnect cannot send it twice. The outcome is one
+  of:
   - **created:** the card links to the new issue;
   - **failed:** GitHub answered with HTTP 4xx, or `gh` did not start. Nothing was created;
   - **unknown:** anything else, such as a timeout, a 5xx, an unreadable answer or a restart
     during the call. The card links to the repository's issues so you can check. Paca never
     sends an unknown draft again.
 - **Limits:** each answer is limited to 12 model requests, 30 tool calls and 3 minutes, and has a
-  Stop button. Each user has one answer at a time. If Paca restarts during an answer, it ends that answer instead of resuming it,
-  because resuming would spend again outside the limits.
+  Stop button. Pi's automatic retries and the summaries of automatic compaction count as model
+  requests too. A session answers one question at a time; a user's sessions can answer at the same
+  time, with no limit on how many, so model spend grows with the sessions answering at once. If
+  Paca restarts during an answer, nothing resumes: the partial answer is lost, and the session
+  says so when it is next opened.
 
 ### Where data and credentials live
 
 All runtime data is in `.data/` in the checkout, which Git ignores:
 
 - `config.json`: your configuration;
-- `paca.sqlite`: the operator's conversation and issue drafts with their outcomes. Data from
-  before multi-user support stays here and belongs to the operator only;
-- `users/<id>/paca.sqlite`: every other user's conversation and drafts;
-- `ask.sqlite`: conversations from `npm run ask`;
+- `users/<id>/paca.db`: that user's session list, request ids, drafts with their outcomes, and
+  deletion state. The operator's is here too;
+- `users/<id>/sessions/<time>_<session id>.jsonl`: one Pi session file per session;
+- `users/<id>/legacy/`: the conversation from before multiple sessions, kept after it was
+  converted (see [Upgrade](docs/container.md#upgrade)); `empty-<time>.sqlite` files there were
+  empty;
+- `users/<id>/pi/`: an empty directory Paca gives Pi as its agent directory, so it finds nothing;
 - `session.key`: the key that signs session cookies, created on first start;
-- `github-workflow.json`, `models-store.json`: generated caches.
+- `users/<id>/github-workflow.json`, `models-store.json`: generated caches.
+
+A `paca.sqlite` from an earlier version is converted into a session at start and moved into
+`legacy/`. An `ask.sqlite` from an earlier version is no longer read.
 
 Credentials stay on the server. The OIDC client secret comes from the environment, model
 credentials from Pi, and GitHub access from each user's own token, or from your local `gh` login
@@ -155,8 +173,8 @@ npm test
      entry to turn its tools off for everyone.
    - Each `users` entry is one person: an `id` (lowercase letters, digits and dashes, used in
      data paths), their OIDC `subject`, and their settings for each tool package under the
-     package's name. `operator: true` marks you: the operator owns `.data/paca.sqlite`, including
-     everything from before multi-user support, and is the user of `npm run ask`.
+     package's name. `operator: true` marks you: the operator owns the conversation from before
+     multi-user support (converted into one of their sessions) and is the user of `npm run ask`.
    - `"herdr": { "roots": ["/absolute/dir"] }` on the operator, with
      `"@paca/extension-herdr": { "socket": "/absolute/path/to/herdr.sock" }` under `extensions`,
      turns on the Herdr tools for agents working in those directories. Only the operator can have
@@ -207,10 +225,10 @@ tailscale serve --https=8443 http://127.0.0.1:4302          # HTTPS on the tailn
 `npm start` logs `paca: listening on http://127.0.0.1:<port>` when it is ready. Open `publicUrl`
 on a phone or browser on the tailnet.
 
-To ask one question from the terminal as the operator, without sign-in or a server and in its
-own conversation store (`ask.sqlite`), run the following. It needs no web settings in the config,
-and it spends one real model answer. It cannot create issues: a draft made there stays in
-`ask.sqlite`, and the web page never shows it.
+To ask one question from the terminal as the operator, without sign-in or a server, run the
+following. It uses the same tools, limits and isolation as the web chat in a session kept only in
+memory, needs no web settings in the config, and spends one real model answer. It cannot create
+issues: a draft made there is printed and then forgotten, and the web page never shows it.
 
 ```sh
 npm run ask -- "What needs attention across my projects?"
@@ -228,11 +246,11 @@ backup and upgrade.
 Press Ctrl-C in both terminals. `tailscale serve` without `--bg` removes its route when it stops;
 check with `tailscale serve status`.
 
-To start over, stop Paca and delete `.data/paca.sqlite` (the operator) or
-`.data/users/<id>/paca.sqlite` (one other user). This deletes that conversation **and** the record
-of every draft and its outcome. Before you reset, check on GitHub every draft whose
-outcome is unknown. After a reset, Paca has no record left to stop you from creating the same
-issue again.
+To remove one session, use **Delete** in the page. To start over for one user, stop Paca and
+delete `.data/users/<id>/`. Either way this deletes the sessions **and** the record of every draft
+and its outcome. Before you delete, check on GitHub every draft whose outcome is unknown, and note
+the links of issues Paca created. Afterwards Paca has no record left to stop you from creating
+the same issue again.
 
 ## Test
 
@@ -247,13 +265,19 @@ The tests use fakes for the model, GitHub and the OIDC provider. Apart from loca
 they make no network calls. They cover:
 
 - refused identities, forged and expired sessions, and the `Origin` and CSRF checks;
-- two users: neither can read the other's conversation, stream or drafts, approve the other's
+- two users: neither can read the other's sessions, stream or drafts, approve the other's
   drafts or use the other's GitHub scope or token;
-- data from before multi-user support (a synthetic fixture written by the old code) staying with
-  the operator, legacy drafts still approvable once;
-- loading only enabled tool packages, by name, and a draft whose package is turned off;
-- out-of-scope reads and unknown tools;
-- the per-answer limits, duplicate requests, a crash mid-answer, and the snapshot on reconnect;
+- sessions: start, resume after a restart, two answering at once, Stop and limits per session,
+  a draft id or unknown id refused under another session, and old routes answering 410;
+- deleting: files and rows removed, the open stream ended, refusal while answering or creating,
+  approval or question racing a delete, a create held during a delete, and a failed file removal;
+- converting the conversation from before multiple sessions (a synthetic fixture written by the
+  old code): turns, drafts and outcomes kept, an interrupted conversion, an empty store, and the
+  previous image finding nothing to approve again;
+- only Paca's tools and prompt with decoy Pi resources on disk, and enabled tool packages loaded
+  by name;
+- the per-answer limits (including compaction requests), duplicate requests, a crash mid-answer,
+  and the snapshot on reconnect;
 - issue drafts: drafting without writing, creating exactly the stored draft once (even with
   simultaneous approvals), dismissal, failed versus unknown outcomes, and a restart during a
   create.

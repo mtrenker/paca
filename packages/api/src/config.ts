@@ -11,7 +11,7 @@ export interface UserConfig {
 	id: string;
 	/** OIDC subject; the issuer is the configured provider's. */
 	subject: string;
-	/** Owns the data written before multi-user support (`<data>/paca.sqlite`). At most one user. */
+	/** Owns the conversation written before multi-user support (`<data>/paca.sqlite`). At most one user. */
 	operator: boolean;
 	[packageName: string]: unknown;
 }
@@ -88,7 +88,15 @@ function isLoopbackHttp(url: URL) {
 	return url.protocol === "http:" && url.hostname === "localhost";
 }
 
-/** Where a user's conversation lives. The operator keeps the pre-multi-user location. */
+/** Where a user's store, sessions and caches live; the operator's too. */
 export function userDataDir(dataDir: string, user: UserConfig) {
-	return user.operator ? dataDir : join(dataDir, "users", user.id);
+	return join(dataDir, "users", user.id);
+}
+
+/**
+ * Where the code before multiple sessions kept a user's one conversation (a Durable store). Start-up
+ * converts a store found here and moves it away (legacy.ts), so the previous image finds none.
+ */
+export function legacyStorePath(dataDir: string, user: UserConfig) {
+	return user.operator ? join(dataDir, "paca.sqlite") : join(dataDir, "users", user.id, "paca.sqlite");
 }

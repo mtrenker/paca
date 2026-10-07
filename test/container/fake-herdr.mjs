@@ -16,7 +16,8 @@ export const SAMPLE_AGENTS = [
  * @param {string} options.path socket path
  * @param {object[]} [options.agents] agents with an optional `screen`; changed in place to simulate Herdr
  * @param {Record<string, (params: object, request: object) => unknown>} [options.handlers] per method:
- *   return a response object, "hang" (never answer) or "close" (close without answering)
+ *   return a response object, "hang" (never answer) or "close" (close without answering), or a
+ *   promise of one, to hold the answer
  * @param {number} [options.mode] socket file mode, 0600 by default like Herdr's
  */
 export async function startFakeHerdr({ path, agents = structuredClone(SAMPLE_AGENTS), handlers = {}, mode = 0o600, log = () => {} }) {
@@ -64,10 +65,11 @@ export async function startFakeHerdr({ path, agents = structuredClone(SAMPLE_AGE
 			buffer = buffer.slice(end + 1);
 			requests.push(request);
 			log(`fake herdr: ${request.method}`);
-			const response = answer(request);
-			if (response === "hang") return;
-			if (response === "close") return socket.destroy();
-			socket.write(`${typeof response === "string" ? response : JSON.stringify(response)}\n`);
+			Promise.resolve(answer(request)).then((response) => {
+				if (response === "hang") return;
+				if (response === "close") return socket.destroy();
+				socket.write(`${typeof response === "string" ? response : JSON.stringify(response)}\n`);
+			});
 		});
 	});
 	await new Promise((resolve, reject) => server.once("error", reject).listen(path, resolve));

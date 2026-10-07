@@ -1,14 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, it } from "node:test";
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { MemoryStorage } from "@earendil-works/pi-durable";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { loadPackages } from "../src/extensions.ts";
 import { openUsers } from "../src/users.ts";
+import { fauxModel, idle, newId, tempDir, text } from "./helpers.js";
 
 describe("tool packages", () => {
 	it("loads only the packages config.json enables, by package name", async () => {
@@ -28,10 +22,8 @@ describe("tool packages", () => {
 	});
 
 	it("binds the real GitHub package per user, and gives a user without settings no tools", async () => {
-		const faux = fauxProvider();
-		const models = createModels();
-		models.setProvider(faux.provider);
-		const model = faux.getModel();
+		const dataDir = await tempDir("paca-ext-");
+		const model = await fauxModel(dataDir, [text("one"), text("two")]);
 		process.env.PACA_TEST_TOKEN_WITH = "test-token";
 		const users = await openUsers({
 			users: [
@@ -39,15 +31,20 @@ describe("tool packages", () => {
 				{ id: "without", subject: "s2", operator: false },
 			],
 			packages: await loadPackages({ "@paca/extension-github": { piClean: "/opt/pi-clean" } }),
-			dataDir: await mkdtemp(join(tmpdir(), "paca-ext-")),
-			models,
-			model: { provider: model.provider, modelId: model.id },
+			dataDir,
+			modelRuntime: model.modelRuntime,
+			model: model.model,
 			modelLabel: "faux",
-			storage: async () => new MemoryStorage(),
-			log: { log: () => {} },
+			log: { log: () => {}, error: () => {} },
 		});
 		delete process.env.PACA_TEST_TOKEN_WITH;
-		const offered = async (subject) => (await users.forSubject(subject).paca.root.agent(ctx)).tools.map((t) => t.name).sort();
+		const offered = async (subject) => {
+			const { sessions } = users.forSubject(subject);
+			const id = newId();
+			sessions.start(id, "hi", "request-1");
+			await idle(sessions, id);
+			return sessions.agentOf(id).getActiveToolNames().sort();
+		};
 		assert.deepEqual(await offered("s1"), ["draft_issue", "portfolio_overview", "read_issue", "search_issues"]);
 		assert.deepEqual(await offered("s2"), []);
 		assert.equal(users.forSubject("s2").info.scope, "No tools");

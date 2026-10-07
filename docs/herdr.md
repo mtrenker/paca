@@ -46,8 +46,8 @@ is not part of this increment. Consequences:
 - Terminal output is untrusted. It can contain secrets and text written to steer a model. The read
   tool labels it as untrusted evidence and bounds it, the persona tells the model never to follow
   instructions in it, and a prompt it suggests still needs the operator's approval of the exact
-  text. Output the model read is stored in the operator's conversation like any tool result; Paca
-  never logs output or prompts.
+  text. Output the model read is stored in the operator's session file like any tool result; Paca never
+  logs output or prompts.
 
 ## Scope
 
@@ -85,10 +85,16 @@ in Herdr.
 
 ## Approval and outcomes
 
-The prompt goes through the same durable approval as GitHub drafts (see
-[Architecture](architecture.md#tool-packages)): the host stores the exact proposal, the card shows
-it, and approval claims it in one commit before the package's action runs once. Duplicate approvals
-find it claimed. The model can never send; only the operator's button can.
+The prompt goes through the same approval as GitHub drafts (see
+[Architecture](architecture.md#tool-packages) and the
+[multi-session design](design/multi-session.md#deletion-contract)): the host stores the exact
+proposal, with the identity it checks, in the operator's `users/<id>/paca.db` under the session
+the tool ran in; the card shows it; and approval claims it with one statement (proposed to
+creating, only while that session is active) before the package's action runs once. Duplicate
+approvals find it claimed. An approval names its session and draft, so a draft id from another
+session or another user is not found. A session being deleted can't approve or dismiss, and a
+delete is refused while one of its prompts is being sent, so a sent prompt always gets its outcome
+recorded. The model can never send; only the operator's button can.
 
 The prompt itself is checked before it is stored: 1 to 4,000 characters, and nothing the card
 cannot show: no control characters except line feeds, no Unicode format characters (bidirectional

@@ -17,11 +17,11 @@ async function setup(options = {}) {
 	const path = join(await mkdtemp(join(tmpdir(), "paca-herdr-")), "herdr.sock");
 	fake = await startFakeHerdr({ path, ...options });
 	const proposals = [];
-	const propose = async (_api, _context, proposal) => void proposals.push(proposal);
+	const propose = (_toolCallId, _ctx, proposal) => void proposals.push(proposal);
 	const herdr = createHerdr({ socket: path, limits: LIMITS });
 	const tools = herdrTools(herdr, ROOTS, propose);
 	const tool = (name) => tools.tools.find((t) => t.name === name);
-	const run = async (name, args = {}) => (await tool(name).execute(args, {}, {})).content[0].text;
+	const run = async (name, args = {}) => (await tool(name).execute("call-1", args, undefined, undefined, {})).content[0].text;
 	return { fake, herdr, tools, run, proposals, send: (proposal) => tools.writes.send_prompt.execute(proposal) };
 }
 
@@ -76,8 +76,8 @@ describe("reads", () => {
 	});
 
 	it("reports an unreachable, silent or oversized Herdr as unavailable", async () => {
-		const missing = herdrTools(createHerdr({ socket: "/nonexistent/herdr.sock", limits: LIMITS }), ROOTS, async () => {});
-		await assert.rejects(missing.tools[0].execute({}, {}, {}), /Herdr is unavailable: .*ENOENT.*recreate Paca's container/);
+		const missing = herdrTools(createHerdr({ socket: "/nonexistent/herdr.sock", limits: LIMITS }), ROOTS, () => {});
+		await assert.rejects(missing.tools[0].execute("call-1", {}, undefined, undefined, {}), /Herdr is unavailable: .*ENOENT.*recreate Paca's container/);
 		for (const handler of ["hang", "close", { id: "?", result: { type: "agent_list", agents: [{ pane_id: "w1:p1", cwd: "/home/preview/code/x".padEnd(200_000, "x") }] } },
 			// 30,000 characters but 90,000 bytes: the limit counts bytes.
 			{ id: "?", result: { type: "agent_list", agents: [{ pane_id: "w1:p1", cwd: `/home/preview/code/${String.fromCodePoint(0x20ac).repeat(30_000)}` }] } }]) {
@@ -205,7 +205,7 @@ describe("sending an approved prompt", () => {
 });
 
 describe("package", () => {
-	const forUser = (user, userSettings, settings = { socket: "/run/herdr.sock" }) => herdrPackage.forUser({ user, settings, userSettings, cacheDir: "/tmp", propose: async () => {} });
+	const forUser = (user, userSettings, settings = { socket: "/run/herdr.sock" }) => herdrPackage.forUser({ user, settings, userSettings, cacheDir: "/tmp", propose: () => {} });
 
 	it("gives tools only to the operator, and refuses Herdr settings on anyone else", () => {
 		assert.equal(forUser({ id: "martin", operator: true }, undefined), undefined);
