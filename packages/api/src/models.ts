@@ -13,8 +13,8 @@ export async function openModels(dataDir: string, configured: string | undefined
 	}
 	if (!ref) throw new Error("No model: set \"model\" (provider/modelId) in the config or a default model in Pi");
 	const slash = ref.indexOf("/");
-	const model = { provider: ref.slice(0, slash), modelId: ref.slice(slash + 1) };
-	if (!models.getModel(model.provider, model.modelId)) throw new Error(`Pi does not know the model ${ref}`);
+	const model = models.getModel(ref.slice(0, slash), ref.slice(slash + 1));
+	if (!model) throw new Error(`Pi does not know the model ${ref}`);
 	if (!models.hasConfiguredAuth(model.provider)) throw new Error(`Pi has no credential for ${model.provider}; use /login in pi or the provider's environment variable`);
 	return { models, model, label: ref };
 }

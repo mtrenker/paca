@@ -3,25 +3,20 @@ import { describe, it } from "node:test";
 import { githubTools } from "@paca/extension-github";
 import { uiState as reduce } from "../src/view.ts";
 
-const { labels, writes } = githubTools({ projects: [] }, async () => {});
-const uiState = (view, extra) => reduce(view, { ...extra, describe: { labels, checkUrl: (d) => writes.create_issue.checkUrl(d) } });
+const { labels, writes } = githubTools({ projects: [] }, () => {});
+const uiState = (entries, extra) => reduce(entries, { ...extra, describe: { labels, checkUrl: (d) => writes.create_issue.checkUrl(d) } });
 
-const draft = (id, status, extra = {}) => ({ id, repository: "o/r", title: `Title ${id}`, body: `Body ${id}`, status, ...extra });
+const draft = (id, status, extra = {}) => ({ id, sessionId: "s", action: "github.create_issue", repository: "o/r", title: `Title ${id}`, body: `Body ${id}`, status, createdAt: "2026-10-07T00:00:00Z", ...extra });
+const message = (id, message) => ({ type: "message", id, parentId: null, timestamp: "", message });
+const user = (id, text) => message(id, { role: "user", content: [{ type: "text", text }] });
+const toolCall = (id, callId) => message(id, { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: callId, name: "draft_issue", arguments: { repository: "o/r" } }] });
 
 describe("page state", () => {
-	// After compaction the view starts at the summary; the turns that made d1 and d3 are gone.
-	const compacted = {
-		entries: [
-			{ kind: "pi.compaction", id: 1 },
-			{ kind: "pi.user", id: 2, model: [{ role: "user", content: "Draft another" }] },
-			{ kind: "pi.assistant", id: 3, model: [{ role: "assistant", content: [{ type: "toolCall", id: "d2", name: "draft_issue", arguments: { repository: "o/r" } }] }] },
-		],
-		docs: {},
-	};
+	// A converted legacy transcript may lack the turns that made d1 and d3.
+	const later = [user("1", "Draft another"), toolCall("2", "d2")];
 
-	it("shows drafts whose turns were compacted away, once, in an Earlier drafts turn", () => {
-		const drafts = { items: { d1: draft("d1", "proposed"), d2: draft("d2", "proposed"), d3: draft("d3", "unknown", { error: "timed out" }) } };
-		const { turns } = uiState(compacted, { drafts });
+	it("shows drafts whose turns are not in the transcript, once, in an Earlier drafts turn", () => {
+		const { turns } = uiState(later, { drafts: [draft("d1", "proposed"), draft("d2", "proposed"), draft("d3", "unknown", { error: "timed out" })] });
 		assert.equal(turns.length, 2);
 		assert.equal(turns[0].question, "Earlier drafts");
 		assert.deepEqual(turns[0].drafts.map((d) => [d.id, d.status]), [["d1", "proposed"], ["d3", "unknown"]]);
@@ -37,7 +32,7 @@ describe("page state", () => {
 			["failed", { error: "Validation Failed (HTTP 422)" }],
 			["dismissed", {}],
 		]) {
-			const { turns } = uiState(compacted, { drafts: { items: { d1: draft("d1", status, extra) } } });
+			const { turns } = uiState(later, { drafts: [draft("d1", status, extra)] });
 			const [card] = turns[0].drafts;
 			assert.equal(turns[0].question, "Earlier drafts", status);
 			assert.equal(card.status, status);
@@ -47,15 +42,33 @@ describe("page state", () => {
 	});
 
 	it("adds no extra turn when every draft still has its turn", () => {
-		const view = {
-			entries: [
-				{ kind: "pi.user", id: 1, model: [{ role: "user", content: "Draft one" }] },
-				{ kind: "pi.assistant", id: 2, model: [{ role: "assistant", content: [{ type: "toolCall", id: "d1", name: "draft_issue", arguments: { repository: "o/r" } }] }] },
-			],
-			docs: {},
-		};
-		const { turns } = uiState(view, { drafts: { items: { d1: draft("d1", "proposed") } } });
+		const { turns } = uiState([user("1", "Draft one"), toolCall("2", "d1")], { drafts: [draft("d1", "proposed")] });
 		assert.equal(turns.length, 1);
 		assert.deepEqual(turns[0].drafts.map((d) => d.id), ["d1"]);
+	});
+
+	it("shows Paca's notices, says why an answer stopped, and marks cut-off steps", () => {
+		const entries = [
+			user("1", "Read it"),
+			toolCall("2", "d1"),
+			message("3", { role: "assistant", stopReason: "aborted", errorMessage: "Not sent: Stopped by you.", content: [] }),
+			{ type: "custom_message", id: "4", parentId: "3", timestamp: "", customType: "paca.notice", content: "Stopped by you.", display: true },
+		];
+		const [turn] = uiState(entries).turns;
+		assert.deepEqual(turn.notices.map((n) => [n.tone, n.text]), [["warning", "The answer was interrupted."], ["warning", "Stopped by you."]]);
+		assert.equal(turn.steps[0].status, "interrupted");
+		assert.equal(uiState(entries, { running: true }).turns[0].steps[0].status, "running");
+	});
+
+	it("shows a converted Durable error result by its message, and a failed model request as an error", () => {
+		const entries = [
+			user("1", "Read it"),
+			toolCall("2", "c1"),
+			message("3", { role: "toolResult", toolCallId: "c1", toolName: "draft_issue", isError: true, content: [{ type: "text", text: "<harness>\n[error] Repository x/y is outside Paca's scope.\n</harness>" }] }),
+			message("4", { role: "assistant", stopReason: "error", errorMessage: "529 overloaded", content: [] }),
+		];
+		const [turn] = uiState(entries).turns;
+		assert.deepEqual([turn.steps[0].status, turn.steps[0].detail], ["unavailable", "Repository x/y is outside Paca's scope."]);
+		assert.deepEqual(turn.notices, [{ tone: "error", text: "The model request failed: 529 overloaded" }]);
 	});
 });

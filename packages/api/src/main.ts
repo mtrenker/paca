@@ -21,7 +21,8 @@ const oidc = await createOidc({
 
 const { models, model, label } = await openModels(DATA_DIR, config.model);
 const packages = await loadPackages(config.extensions);
-const users = await openUsers({ users: config.users, packages, dataDir: DATA_DIR, models, model, modelLabel: label });
+// Converts each user's legacy conversation before the server listens (legacy.ts).
+const users = await openUsers({ users: config.users, packages, dataDir: DATA_DIR, modelRuntime: models, model, modelLabel: label });
 const sessions = createSessions({ key: await loadSessionKey(DATA_DIR), issuer: oidc.issuer, allows: (subject) => users.forSubject(subject) !== undefined });
 
 const webDir = dirname(fileURLToPath(import.meta.resolve("@paca/web/package.json")));

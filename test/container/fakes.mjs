@@ -25,16 +25,21 @@ async function readBody(req) {
 
 /**
  * First request of an answer: draft an issue in the first repository of the user's GitHub scope,
- * as the system prompt states it. Once a tool result is back: answer in text.
+ * as the system prompt states it. Once a tool result is back: answer in text, word by word.
  */
 function completion(request) {
-	const toolResult = request.messages.some((m) => m.role === "tool");
+	const asked = request.messages.findLastIndex((m) => m.role === "user");
+	const toolResult = request.messages.slice(asked).some((m) => m.role === "tool");
 	const chunk = (delta, finish = null) => ({ id: "smoke", object: "chat.completion.chunk", created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }] });
 	const system = request.messages.filter((m) => m.role === "system" || m.role === "developer").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
 	const repository = /^- ([\w.-]+\/[\w.-]+) \(Project /m.exec(system)?.[1];
-	if (toolResult || !repository) return [chunk({ role: "assistant", content: repository ? `Smoke answer: drafted one issue in ${repository}.` : "Smoke answer: no GitHub scope." }), chunk({}, "stop")];
-	const question = request.messages.filter((m) => m.role === "user").at(-1)?.content;
-	const args = JSON.stringify({ repository, title: "Smoke draft", body: `Made by the fake model for: ${typeof question === "string" ? question.slice(0, 200) : "a question"}` });
+	if (toolResult || !repository) {
+		const answer = repository ? `Smoke answer: drafted one issue in ${repository}.` : "Smoke answer: no GitHub scope.";
+		return [chunk({ role: "assistant", content: "" }), ...answer.split(/(?<= )/).map((word) => chunk({ content: word })), chunk({}, "stop")];
+	}
+	const content = request.messages.filter((m) => m.role === "user").at(-1)?.content;
+	const question = typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
+	const args = JSON.stringify({ repository, title: "Smoke draft", body: `Made by the fake model for: ${question.slice(0, 200) || "a question"}` });
 	return [chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function", function: { name: "draft_issue", arguments: args } }] }), chunk({}, "tool_calls")];
 }
 
@@ -49,11 +54,13 @@ const escape = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.charCode
  * @param {string} options.issuer HTTPS origin with a trailing slash, also the model's base
  * @param {number} options.port HTTPS port
  * @param {{ key: Buffer, cert: Buffer }} options.tls
+ * @param {number} [options.modelDelayMs] spread each model answer over this long, so the preview shows
+ *   an answer in progress and Stop
  * @param {{ origin: string, port: number, users: { sub: string, username: string }[] }} [options.login]
  *   a sign-in page for a browser, listing synthetic users, with the same certificate. Paca's OIDC
  *   client accepts only an HTTPS authorization endpoint. Without it, /authorize is absent.
  */
-export function startFakes({ issuer, port, tls, host, login, log = console.log }) {
+export function startFakes({ issuer, port, tls, host, login, modelDelayMs = 0, log = console.log }) {
 	const authorizationEndpoint = login ? `${login.origin}/authorize` : `${issuer}authorize`;
 	const api = createServer(tls, async (req, res) => {
 		const url = new URL(req.url, issuer);
@@ -86,7 +93,12 @@ export function startFakes({ issuer, port, tls, host, login, log = console.log }
 		}
 		if (route === "POST /v1/chat/completions") {
 			res.writeHead(200, { "Content-Type": "text/event-stream" });
-			for (const chunk of completion(JSON.parse(await readBody(req)))) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+			const chunks = completion(JSON.parse(await readBody(req)));
+			for (const chunk of chunks) {
+				if (modelDelayMs) await new Promise((resolve) => setTimeout(resolve, modelDelayMs / chunks.length));
+				if (res.destroyed) return; // Stop aborted the request
+				res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+			}
 			return res.end("data: [DONE]\n\n");
 		}
 		json(res, 404, { error: "not found" });
