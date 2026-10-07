@@ -26,8 +26,9 @@ syntax: no enums, namespaces or constructor parameter properties. Only the page 
   users, repository scope, limits or GitHub writes. Tests live in `packages/*/test/` and run with
   `node --test`.
 - Use the fakes the tests already use: pi-ai's faux provider for models, a stub `run` function or
-  stub `github` object for GitHub, and stub `oidc` objects and users for the server. Tests must
-  not call a real model, GitHub or an identity provider.
+  stub `github` object for GitHub, `test/container/fake-herdr.mjs` for Herdr's socket, and stub
+  `oidc` objects and users for the server. Tests must not call a real model, GitHub, Herdr or an
+  identity provider, and never prompt a real agent.
 - Never test against live GitHub writes. A real issue is created only when the person whose
   account it is approves that exact issue in the app.
 
@@ -37,7 +38,9 @@ syntax: no enums, namespaces or constructor parameter properties. Only the page 
 credentials: a fake OIDC provider and a fake model (from `test/container/fakes.mjs`), and a fake
 `gh` that answers issue creation with a made-up issue, so **Create issue** never reaches GitHub.
 Reads are not faked and show as unavailable. The fake model drafts one issue in the user's own
-repository for every question.
+repository for every question. `martin` is the operator and also has a fake Herdr with two agents
+in scope and one outside it: a question that mentions an agent lists them and proposes a prompt,
+and **Send prompt** only records it in the fake (the preview's terminal says so).
 
 ```sh
 ss -ltn | grep -E ':440[2-4] ' || echo "4402-4404 are free"

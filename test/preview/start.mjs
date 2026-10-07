@@ -1,11 +1,14 @@
 // Local preview with two synthetic users and no real credentials: `npm run preview`.
 // Starts the fake OIDC provider and model (test/container/fakes.mjs) and Paca in the foreground,
-// with data in .data/preview/ and a fake gh, so approving a draft never reaches GitHub.
+// with data in .data/preview/, a fake gh, so approving a draft never reaches GitHub, and a fake
+// Herdr (test/container/fake-herdr.mjs) for the operator, so a sent prompt reaches no terminal.
 // Ctrl-C stops everything; the data stays for the next start. See CONTRIBUTING.md.
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { startFakeHerdr } from "../container/fake-herdr.mjs";
 import { startFakes } from "../container/fakes.mjs";
 
 const root = resolve(import.meta.dirname, "..", "..");
@@ -14,6 +17,8 @@ const fakesPort = port + 1;
 const loginPort = port + 2;
 const dataDir = join(root, ".data", "preview");
 const tlsDir = join(dataDir, "tls");
+// Unix socket paths are limited to about 100 bytes, too short for a path inside the checkout.
+const herdrDir = mkdtempSync(join(tmpdir(), "paca-preview-herdr-"));
 const issuer = `https://localhost:${fakesPort}/`;
 const USERS = [
 	{ id: "martin", sub: "preview-martin", username: "martin (synthetic)", repository: "preview-martin/notes", operator: true },
@@ -39,11 +44,11 @@ const config = {
 	port,
 	oidc: { issuer, clientId: "paca-smoke" },
 	model: "fake/fake-model",
-	extensions: { "@paca/extension-github": { piClean: "/nonexistent/pi-clean" } },
+	extensions: { "@paca/extension-github": { piClean: "/nonexistent/pi-clean" }, "@paca/extension-herdr": { socket: join(herdrDir, "herdr.sock") } },
 	users: USERS.map((u) => ({
 		id: u.id,
 		subject: u.sub,
-		...(u.operator ? { operator: true } : {}),
+		...(u.operator ? { operator: true, herdr: { roots: ["/home/preview/code"] } } : {}),
 		github: { projects: [{ owner: u.repository.split("/")[0], number: 1, repository: u.repository }], tokenEnv: `PACA_GH_TOKEN_${u.id.toUpperCase()}` },
 	})),
 };
@@ -60,6 +65,8 @@ const fakes = startFakes({
 	login: { origin: `https://localhost:${loginPort}`, port: loginPort, users: USERS.map((u) => ({ sub: u.sub, username: u.username })) },
 });
 
+// The operator's Herdr: two agents in /home/preview/code and one outside the scope.
+const herdr = await startFakeHerdr({ path: join(herdrDir, "herdr.sock"), log: console.log });
 const tokens = Object.fromEntries(USERS.map((u) => [`PACA_GH_TOKEN_${u.id.toUpperCase()}`, `preview-token-of-${u.id}`]));
 const paca = spawn(process.execPath, [join(root, "packages", "api", "src", "main.ts")], {
 	stdio: "inherit",
@@ -75,11 +82,13 @@ const paca = spawn(process.execPath, [join(root, "packages", "api", "src", "main
 	},
 });
 console.log(`preview: open http://localhost:${port}/ and sign in as ${USERS.map((u) => u.id).join(" or ")}`);
+console.log("preview: martin also has a fake Herdr; ask him something about an agent to see a prompt card");
 console.log(`preview: the fake sign-in page on https://localhost:${loginPort} uses a throwaway certificate; accept the browser's warning once`);
 const stop = () => paca.kill("SIGTERM");
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 paca.on("exit", async (code) => {
-	await fakes.close();
+	await Promise.all([fakes.close(), herdr.close()]);
+	rmSync(herdrDir, { recursive: true, force: true });
 	process.exit(code ?? 0);
 });

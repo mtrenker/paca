@@ -15,6 +15,7 @@ An npm workspace under `packages/`:
 | `@paca/contracts` | Types the API and the page both use: page state and session info. Types only |
 | `@paca/extension` | The tool package contract: types and `defineToolPackage` |
 | `@paca/extension-github` | The GitHub tool package: Projects overview, issue reads, search, issue drafts |
+| `@paca/extension-herdr` | The Herdr tool package, operator only: agent list, screen reads, prompt proposals ([Herdr agents](herdr.md)) |
 
 The split is in code, not in services: the API serves the page from `@paca/web`, and the
 container still runs one process. Server code, credentials and tool results never reach the
@@ -57,16 +58,21 @@ A tool package is a trusted npm package installed with Paca whose default export
 by name (`extensions`); nothing else is loaded, and paths are refused. Packages run as server
 code with the server's privileges: they are trusted, not sandboxed.
 
-`forUser` receives the host-authenticated user, the package's settings and that user's settings,
+`forUser` receives the host-authenticated user (their id and whether they are the operator), the
+package's settings and that user's settings,
 and returns Pi Durable tools and prompt sections plus labels for the page. Tools run through Pi
 Durable's own extension mechanism (`defineExtension`), with Paca's run limits and tool allowlist
 as hooks around them.
 
 Writes are not tools. A package declares named write actions; its tools may only **propose** one
-through the host. The host stores the exact proposal, shows it as a card, and on approval claims
-it in one commit before calling the package's action once. The action reports `created`,
-`failed` (nothing was written) or `unknown`; anything it throws counts as `unknown`, which is
-never sent again. Duplicate protection, exact content and outcomes stay host code.
+through the host. A proposal is a target, a title and a body, shown exactly on the card, plus
+optional `expect` facts the action checks before writing, such as which agent the user saw. The
+host stores the exact proposal, shows it as a card, and on approval claims it in one commit before
+calling the package's action once. The action reports `created` (it happened: an issue was
+created, a prompt was submitted; a link is optional), `failed` (nothing was written) or `unknown`;
+anything it throws counts as `unknown`, which is never sent again. Duplicate protection, exact
+content and outcomes stay host code. The page words a card by its action; stored drafts keep the
+field name `repository` for the target, so existing drafts are unchanged.
 
 A minimal package, `@example/paca-clock`, installed as a workspace package or npm dependency and
 enabled with `"extensions": { "@example/paca-clock": {} }`. Users get it only with settings under
@@ -95,8 +101,9 @@ export default defineToolPackage<{}, { timeZone: string }>({
 });
 ```
 
-The Paca persona (how to rank work, how to answer on a phone) is the API's prompt, not part of
-the GitHub package, so the package stays a generic set of scoped GitHub tools.
+The Paca persona (how to rank work, how to treat terminal output, how to answer on a phone) is
+the API's prompt, not part of the packages, so they stay generic sets of scoped tools. Each part
+of it appears only for a user with that package's tools.
 
 ## Future extension storage (not built)
 

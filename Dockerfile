@@ -47,6 +47,7 @@ COPY packages/api/package.json packages/api/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/extension/package.json packages/extension/
 COPY packages/extension-github/package.json packages/extension-github/
+COPY packages/extension-herdr/package.json packages/extension-herdr/
 COPY packages/web/package.json packages/web/
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
 

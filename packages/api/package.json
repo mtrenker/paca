@@ -11,6 +11,7 @@
     "@paca/contracts": "*",
     "@paca/extension": "*",
     "@paca/extension-github": "*",
+    "@paca/extension-herdr": "*",
     "@paca/web": "*",
     "openid-client": "6.8.8"
   }
