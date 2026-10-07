@@ -40,7 +40,10 @@ Everything Paca and Pi write lives in `/data`:
 
 Use a named volume. Docker creates it owned by `node` with mode 0700. If you bind-mount a host
 directory instead, it must be owned by uid 1000 (`chown 1000:1000 <dir> && chmod 700 <dir>`).
-Never mount your home directory, `~/.pi/agent`, `~/.config/gh` or the Docker socket.
+Never mount your home directory, `~/.pi/agent`, `~/.config/gh` or the Docker socket. The one
+host file Paca may get is Herdr's socket, for the operator only; see
+[Herdr agents](herdr.md#run-it) for the mount, the uid it needs, and why it gives Paca control of
+the host's terminals.
 
 1. Write `config.json` as in the [README](../README.md#configure), with two differences:
 
@@ -174,9 +177,15 @@ throwaway certificate and data. It checks:
 - a wrong `Origin` or CSRF token is refused;
 - a question gets an answer with one proposed draft;
 - `docker stop` exits 0 within the grace period, and the secrets never appear in the logs;
-- a new container on the same volume keeps the session key, the conversation and the draft.
+- a new container on the same volume keeps the session key, the conversation and the draft;
+- with a users config and a fake Herdr socket mounted read-only, the operator's question lists
+  agents and proposes a prompt, approving it sends that exact text once, a second approval is
+  refused, and the prompt does not appear in the logs.
 
-It does not call GitHub: the fake model only drafts, and nobody approves the draft. The test
+It does not call GitHub: the fake model only drafts, and nobody approves the GitHub draft. The
+Herdr socket is a fake on the host (`fake-herdr.mjs`) that records prompts and types nothing.
+The image is built from the checkout as it is, so build from a checkout whose files are readable
+by others (umask 022): the container's user reads them as uid 1000. The test
 network is an ordinary Docker bridge, because Docker does not publish ports from internal
 networks, but every endpoint is a fake and every credential a dummy. The test removes every
 container, network and volume it created (all named `paca-smoke-<run id>`).
