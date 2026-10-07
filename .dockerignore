@@ -1,8 +1,13 @@
-# Allowlist: only what the image needs. Keeps .data/, .env files, .git, node_modules,
-# tests and anything untracked out of the build context. See docs/container.md.
+# Allowlist: only what the image needs. Keeps .data/, .env files, .git, node_modules, tests,
+# built files and anything untracked out of the build context. See docs/container.md.
 *
 !package.json
 !package-lock.json
-!src/
-!public/
 !LICENSE
+!tsconfig.base.json
+!packages/
+packages/*/*
+!packages/*/package.json
+!packages/*/src/
+!packages/web/public/
+!packages/web/tsconfig.json

@@ -19,8 +19,10 @@ Tags:
   session cookies are `Secure`, so sign-in does not work over plain HTTP.
 - An OIDC client for Paca, as in the [README](../README.md#configure), with the redirect URI
   `<publicUrl>/auth/callback`.
-- A GitHub token for `GH_TOKEN`: a classic token with `repo` and `read:project` (see
-  [Prerequisites](../README.md#prerequisites)). `gh` in the container talks to github.com.
+- A GitHub token per user: a classic token with `repo` and `read:project` (see
+  [Prerequisites](../README.md#prerequisites)). `GH_TOKEN` is the server's login, used only by
+  users granted `serverLogin`; other users' tokens come in as their `PACA_GH_TOKEN_<NAME>`
+  variables. `gh` in the container talks to github.com.
 - A credential for one Pi model provider (see [Model credentials](#model-credentials)).
 
 ## Prepare the data volume
@@ -30,7 +32,8 @@ Everything Paca and Pi write lives in `/data`:
 | Path | What it is |
 | --- | --- |
 | `/data/config.json` | your configuration |
-| `/data/paca.sqlite` | the conversation and every issue draft with its outcome |
+| `/data/paca.sqlite` | the operator's conversation and every issue draft with its outcome |
+| `/data/users/<id>/` | every other user's conversation and drafts, created on first start |
 | `/data/session.key` | the key that signs session cookies, created on first start |
 | `/data/pi/` | Pi's agent directory (`PI_CODING_AGENT_DIR`): `auth.json`, `models.json`, `settings.json` |
 | `/data/github-workflow.json`, `/data/models-store.json` | generated caches |
@@ -41,7 +44,8 @@ Never mount your home directory, `~/.pi/agent`, `~/.config/gh` or the Docker soc
 
 1. Write `config.json` as in the [README](../README.md#configure), with two differences:
 
-   - `"piClean": "/opt/pi-clean"`, where the image keeps the collector;
+   - `"piClean": "/opt/pi-clean"` (under `extensions["@paca/extension-github"]`, or at the top
+     level in a single-user config), where the image keeps the collector;
    - `port` is ignored: the container always listens on 4302 (`PACA_PORT`).
 
 2. Copy it into a new volume:
@@ -73,8 +77,9 @@ Without `model` in `config.json`, Paca uses the default model in `/data/pi/setti
 
 Pass secrets as environment variables at start; Docker reads each `-e NAME` without a value
 from the environment of `docker run`. With Proton Pass, `.data/secrets.env` holds references
-such as `PACA_OIDC_CLIENT_SECRET="pass://<vault>/<item>/<field>"` and
-`GH_TOKEN="pass://<vault>/<item>/<field>"`:
+such as `PACA_OIDC_CLIENT_SECRET="pass://<vault>/<item>/<field>"`,
+`GH_TOKEN="pass://<vault>/<item>/<field>"` and one `PACA_GH_TOKEN_<NAME>` per user with a token
+of their own:
 
 ```sh
 pass-cli run --env-file .data/secrets.env -- \
@@ -82,7 +87,7 @@ pass-cli run --env-file .data/secrets.env -- \
     -p 127.0.0.1:4302:4302 \
     -v paca-data:/data \
     --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-    -e PACA_OIDC_CLIENT_SECRET -e GH_TOKEN \
+    -e PACA_OIDC_CLIENT_SECRET -e GH_TOKEN -e PACA_GH_TOKEN_<NAME> \
     ghcr.io/mtrenker/paca:sha-<commit>
 ```
 
@@ -145,10 +150,12 @@ docker run --rm -i -v paca-data:/data --entrypoint tar ghcr.io/mtrenker/paca:<ta
 3. `docker stop paca && docker rm paca`
 4. Start again with the new tag and the same volume.
 
-The session key, conversation and drafts carry over. Paca makes no promise that an older image
-can open data a newer one wrote, so to roll back, restore the backup from step 1 and start the
-old tag. A reset works as in the [README](../README.md#stop-and-reset): delete
-`/data/paca.sqlite` while Paca is stopped, after checking every draft whose outcome is unknown.
+The session key, conversation and drafts carry over. Moving to multi-user support changes no
+stored data: a single-user config keeps working, and `/data/paca.sqlite` stays the operator's.
+Paca makes no promise that an older image can open data a newer one wrote, so to roll back,
+restore the backup from step 1 and start the old tag. A reset works as in the
+[README](../README.md#stop-and-reset): delete `/data/paca.sqlite` (or `/data/users/<id>/`) while
+Paca is stopped, after checking every draft whose outcome is unknown.
 
 ## Test the image
 
@@ -223,9 +230,14 @@ docker --config "$(mktemp -d)" pull ghcr.io/mtrenker/paca:latest
 - **Init:** `tini` is PID 1. It forwards `SIGTERM` to Node and reaps `gh` processes left behind
   when a collector run times out.
 - **Build context:** `.dockerignore` is an allowlist: `package.json`, `package-lock.json`,
-  `LICENSE`, and the `src/` and `public/` directories. `.data/`, `.env` files, `.git`,
-  `node_modules`, `test/`, `docs/` and other top-level files stay out. Everything inside `src/`
-  and `public/` is included, tracked or not, so keep private files out of those directories.
+  `LICENSE`, `tsconfig.base.json`, and from `packages/` each package's `package.json` and `src/`,
+  plus the page's `public/` and `tsconfig.json`. `.data/`, `.env` files, `.git`, `node_modules`,
+  tests, built files, `docs/` and other top-level files stay out. Everything inside those `src/`
+  and `public/` directories is included, tracked or not, so keep private files out of them.
+- **TypeScript:** the server runs its sources directly (`node packages/api/src/main.ts`); Node 24
+  strips the types without a flag or warning. Only the page is compiled, in a `web` build stage,
+  and just `packages/web/dist/` is copied into the image. Workspace packages are symlinks in
+  `node_modules/@paca/` to `/app/packages/`.
 - **One platform:** linux/amd64 only. Adding arm64 would mean per-architecture `gh` and `tini`
   sums and a test on that platform.
 - **Publishing:** the `publish` job builds again from the same commit with the build cache the

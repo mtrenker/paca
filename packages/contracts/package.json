@@ -1,0 +1,7 @@
+{
+  "name": "@paca/contracts",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": "./src/index.ts"
+}

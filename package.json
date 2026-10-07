@@ -4,18 +4,20 @@
   "license": "MIT",
   "type": "module",
   "engines": { "node": ">=24" },
+  "workspaces": ["packages/*"],
   "scripts": {
-    "start": "node src/main.js",
-    "ask": "node src/ask.js",
-    "test": "node --test \"test/*.test.js\"",
-    "test:container": "node test/container/smoke.mjs"
+    "build": "tsc -p packages/web",
+    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web --noEmit",
+    "prestart": "npm run build",
+    "start": "node packages/api/src/main.ts",
+    "ask": "node packages/api/src/ask.ts",
+    "test": "node --test \"packages/*/test/*.test.js\"",
+    "test:container": "node test/container/smoke.mjs",
+    "preview": "node test/preview/start.mjs"
   },
-  "dependencies": {
-    "@earendil-works/chord": "1.0.3",
-    "@earendil-works/pi-ai": "1.0.3",
-    "@earendil-works/pi-coding-agent": "1.0.3",
-    "@earendil-works/pi-durable": "1.0.3",
-    "openid-client": "6.8.8"
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
   },
   "overrides": {
     "@earendil-works/chord": "1.0.3",

@@ -1,6 +1,6 @@
 name: ci
 
-# Pull requests run the tests, build the image and smoke-test it, with a read-only token and
+# Pull requests typecheck, build and run the tests, build the image and smoke-test it, with a read-only token and
 # no registry login. Pushes to main do the same and then publish ghcr.io/mtrenker/paca.
 
 on:
@@ -21,6 +21,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
       - run: npm test
 
   image:

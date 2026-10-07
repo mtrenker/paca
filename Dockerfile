@@ -38,10 +38,25 @@ RUN cd /in \
  && install -D -m 0644 github-planning.mjs /out/pi-clean/scripts/github-planning.mjs \
  && install -D -m 0644 lib.mjs /out/pi-clean/scripts/github-planning/lib.mjs
 
+# Production dependencies. Workspace packages become symlinks in node_modules/@paca/ to
+# /app/packages/, which the final stage copies from the build context.
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY packages/api/package.json packages/api/
+COPY packages/contracts/package.json packages/contracts/
+COPY packages/extension/package.json packages/extension/
+COPY packages/extension-github/package.json packages/extension-github/
+COPY packages/web/package.json packages/web/
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
+
+# The page is the only compiled part: TypeScript to packages/web/dist/app.js. The server runs its
+# TypeScript sources directly; Node 24 strips the types.
+FROM deps AS web
+COPY tsconfig.base.json ./
+COPY packages/contracts/src packages/contracts/src
+COPY packages/web packages/web
+RUN npm ci --workspace @paca/web --include-workspace-root --ignore-scripts --no-audit --no-fund && npm run build
 
 FROM ${NODE_IMAGE}
 # ca-certificates for HTTPS from gh and Node (OIDC, model providers, GitHub).
@@ -56,8 +71,8 @@ RUN mkdir -m 0700 /data && chown node:node /data
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json LICENSE ./
-COPY src ./src
-COPY public ./public
+COPY packages ./packages
+COPY --from=web /app/packages/web/dist ./packages/web/dist
 
 # Everything Paca and Pi write lives in /data. GH_TOKEN, PACA_OIDC_CLIENT_SECRET and model
 # credentials are runtime environment, never build arguments.
@@ -74,4 +89,4 @@ EXPOSE 4302
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:4302/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 ENTRYPOINT ["/usr/local/bin/tini", "--"]
-CMD ["node", "src/main.js"]
+CMD ["node", "packages/api/src/main.ts"]
