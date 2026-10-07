@@ -5,8 +5,7 @@
 // never learns about users any other way. Tools may read. They never write: a tool proposes a
 // write through `propose`, the user approves the exact proposal, and only then does the host call
 // the package's write action, once.
-import type { Context } from "@earendil-works/chord";
-import type { PromptSection, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 /** The signed-in user, as the host knows them. */
 export interface HostUser {
@@ -38,8 +37,11 @@ export interface WriteAction {
 	checkUrl(proposal: Proposal): string;
 }
 
-/** Stores a proposal for the user's approval, keyed by the calling tool call. Writes nothing else. */
-export type Propose = (api: ToolExecutionApi, context: Context, proposal: Proposal) => Promise<void>;
+/**
+ * Stores a proposal for the user's approval in the session the tool runs in, keyed by the calling
+ * tool call. Pass the `toolCallId` and `ctx` your tool's `execute` received. Writes nothing else.
+ */
+export type Propose = (toolCallId: string, ctx: ExtensionContext, proposal: Proposal) => void;
 
 /** How the page names a call of one tool in the evidence trail. */
 export interface ToolLabel {
@@ -50,9 +52,10 @@ export interface ToolLabel {
 
 /** A package's tools for one user. */
 export interface UserTools {
-	readonly tools: readonly ToolRegistration[];
-	/** Facts about the tools for the model, such as the scope. Not persona or workflow policy. */
-	readonly sections?: readonly PromptSection[];
+	/** Pi tools (`defineTool` from pi-coding-agent). The host offers the model these and nothing else. */
+	readonly tools: readonly ToolDefinition[];
+	/** Facts about the tools for the model's system prompt, such as the scope. Not persona or workflow policy. */
+	readonly prompt?: string;
 	readonly labels: Readonly<Record<string, ToolLabel>>;
 	readonly writes?: Readonly<Record<string, WriteAction>>;
 	/** A short line for the page header, such as "2 Projects", and its tooltip. */
@@ -71,7 +74,7 @@ export interface ForUserInput<Settings = unknown, UserSettings = unknown> {
 }
 
 export interface ToolPackage<Settings = unknown, UserSettings = unknown> {
-	/** Names the package's Pi extension, its key in user settings and the prefix of its actions. */
+	/** Names the package: its key in user settings and the prefix of its actions. */
 	readonly name: string;
 	/** The user's tools, or undefined when this user has none. Throw for invalid settings. */
 	forUser(input: ForUserInput<Settings, UserSettings>): UserTools | undefined;

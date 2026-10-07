@@ -53,8 +53,20 @@ export interface Turn {
 	retry?: string;
 }
 
-/** Every SSE `state` event carries the whole state, so a reconnect starts from the latest one. */
+/** One open session's transcript. Every SSE `state` event carries it whole, so a reconnect starts from the latest one. */
 export interface PageState {
 	running: boolean;
 	turns: Turn[];
+}
+
+/** One saved session in the list, from the SSE `sessions` event (the whole list each time). */
+export interface SessionSummary {
+	/** Lowercase UUID v4, made by the page when it starts the session. */
+	id: string;
+	/** The first question. */
+	title: string;
+	running: boolean;
+	/** Drafts waiting for Create or Dismiss. */
+	waiting: number;
+	lastActivity: string;
 }

@@ -58,6 +58,7 @@ const fakes = startFakes({
 	host: "127.0.0.1",
 	tls: { key: readFileSync(join(tlsDir, "key.pem")), cert: readFileSync(join(tlsDir, "cert.pem")) },
 	login: { origin: `https://localhost:${loginPort}`, port: loginPort, users: USERS.map((u) => ({ sub: u.sub, username: u.username })) },
+	modelDelayMs: 4000,
 });
 
 const tokens = Object.fromEntries(USERS.map((u) => [`PACA_GH_TOKEN_${u.id.toUpperCase()}`, `preview-token-of-${u.id}`]));
