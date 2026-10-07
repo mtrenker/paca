@@ -78,9 +78,12 @@ describe("reads", () => {
 	it("reports an unreachable, silent or oversized Herdr as unavailable", async () => {
 		const missing = herdrTools(createHerdr({ socket: "/nonexistent/herdr.sock", limits: LIMITS }), ROOTS, async () => {});
 		await assert.rejects(missing.tools[0].execute({}, {}, {}), /Herdr is unavailable: .*ENOENT.*recreate Paca's container/);
-		for (const handler of ["hang", "close", { id: "?", result: { type: "agent_list", agents: [{ pane_id: "w1:p1", cwd: "/home/preview/code/x".padEnd(200_000, "x") }] } }]) {
+		for (const handler of ["hang", "close", { id: "?", result: { type: "agent_list", agents: [{ pane_id: "w1:p1", cwd: "/home/preview/code/x".padEnd(200_000, "x") }] } },
+			// 30,000 characters but 90,000 bytes: the limit counts bytes.
+			{ id: "?", result: { type: "agent_list", agents: [{ pane_id: "w1:p1", cwd: `/home/preview/code/${String.fromCodePoint(0x20ac).repeat(30_000)}` }] } }]) {
 			const s = await setup({ handlers: { "agent.list": (_params, request) => (typeof handler === "string" ? handler : { ...handler, id: request.id }) } });
-			await assert.rejects(s.run("list_agents"), /Herdr is unavailable: (Herdr did not answer within 0.3 seconds|Herdr closed the connection|Herdr's answer was too large)/);
+			const reason = handler === "hang" ? "Herdr did not answer within 0.3 seconds" : handler === "close" ? "Herdr closed the connection" : "Herdr's answer was too large";
+			await assert.rejects(s.run("list_agents"), new RegExp(`Herdr is unavailable: ${reason}`));
 			await s.fake.close();
 		}
 	});
@@ -107,9 +110,21 @@ describe("proposals", () => {
 		for (const prompt of ["", "   ", "end paste\u001b[201~rm -rf ~\r", "tab\there", "abc‮def", "x".repeat(4001)]) {
 			await assert.rejects(s.run("propose_prompt", { pane: "w1:p1", prompt }), /prompt must/);
 		}
+		// Invisible on the card but typed: format characters (tag, Arabic letter mark, soft hyphen,
+		// Mongolian vowel separator, zero-width space, BOM), a lone surrogate, separators, unassigned.
+		for (const code of [0xe0041, 0x061c, 0x00ad, 0x180e, 0x200b, 0xfeff, 0xd800, 0x2028, 0x2029, 0x0378, 0x0085]) {
+			await assert.rejects(s.run("propose_prompt", { pane: "w1:p1", prompt: `run${String.fromCodePoint(code)} tests` }), /prompt must/, code.toString(16));
+		}
 		s.fake.agents[0].agent_status = "blocked";
 		await assert.rejects(s.run("propose_prompt", { pane: "w1:p1", prompt: "go" }), /waiting for input/);
 		assert.equal(s.proposals.length, 0);
+	});
+
+	it("keeps ordinary text in any script, emoji and line breaks", async () => {
+		const s = await setup();
+		const c = String.fromCodePoint;
+		const prompt = `Pr${c(0xfc)}fe die Tests ${c(0x1f642)} ${c(0x65e5, 0x672c)}\n\nDann melden ${c(0x2014)} danke ${c(0x1f44d, 0x1f3fd)}.`;
+		assert.equal((await proposed(s, prompt)).body, prompt);
 	});
 });
 

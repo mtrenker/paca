@@ -24,9 +24,10 @@ const OUTPUT_MAX = 8000;
 const LIST_MAX = 30;
 const PANE = /^[A-Za-z0-9_-]{1,32}:p[0-9]{1,6}$/;
 // Herdr types the prompt as given, so an escape could end bracketed paste and type keys the card
-// never showed. Line breaks are the only control characters allowed; bidirectional and invisible
-// formatting characters are refused too, so the card shows the text as it will be typed.
-const UNSAFE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
+// never showed. The card must show every character that is typed: refused are control characters
+// other than the line feed, format characters (bidirectional marks, zero-width and tag characters,
+// soft hyphens), lone surrogates, line and paragraph separators, and unassigned code points.
+const UNSAFE = /[^\P{Cc}\n]|[\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Cn}]/u;
 // Herdr's agent.prompt errors that it returns before typing anything (src/app/api/agents.rs, 0.9.3).
 const NOT_TYPED = new Set(["agent_not_found", "agent_target_ambiguous", "agent_blocked", "agent_not_ready", "empty_agent_prompt"]);
 

@@ -90,10 +90,13 @@ The prompt goes through the same durable approval as GitHub drafts (see
 it, and approval claims it in one commit before the package's action runs once. Duplicate approvals
 find it claimed. The model can never send; only the operator's button can.
 
-The prompt itself is checked before it is stored: 1 to 4,000 characters, no control characters
-except line breaks. Herdr writes the text into the terminal as given (inside bracketed paste when
-the agent enabled it) and then presses Enter, so an escape character could otherwise end the paste
-early and type keys the card never showed.
+The prompt itself is checked before it is stored: 1 to 4,000 characters, and nothing the card
+cannot show: no control characters except line feeds, no Unicode format characters (bidirectional
+marks, zero-width, tag and soft-hyphen characters), lone surrogates, line or paragraph separators,
+or unassigned code points. Herdr writes the text into the terminal as given (inside bracketed paste
+when the agent enabled it) and then presses Enter, so an escape character could otherwise end the
+paste early and type keys the card never showed, and an invisible character would be typed
+without the operator having seen it.
 
 Outcomes:
 

@@ -59,7 +59,7 @@ export function createHerdr({ socket, limits = LIMITS }: { socket: string; limit
 			const id = `paca-${randomUUID()}`; // a fresh id per request, not an idempotency key
 			let written = false;
 			let settled = false;
-			let buffer = "";
+			let buffer = Buffer.alloc(0);
 			const connection = createConnection(socket);
 			const finish = (error: HerdrError | undefined, result?: Record<string, unknown>) => {
 				if (settled) return;
@@ -71,19 +71,19 @@ export function createHerdr({ socket, limits = LIMITS }: { socket: string; limit
 			};
 			const fail = (code: string, message: string) => finish(new HerdrError(code, message, { written }));
 			const timer = setTimeout(() => fail("timeout", `Herdr did not answer within ${timeoutMs / 1000} seconds`), timeoutMs);
-			connection.setEncoding("utf8");
 			connection.on("connect", () => {
 				written = true;
 				connection.write(`${JSON.stringify({ id, method, params })}\n`);
 			});
-			connection.on("data", (chunk: string) => {
-				buffer += chunk;
-				const end = buffer.indexOf("\n");
+			connection.on("data", (chunk: Buffer) => {
+				// Bytes, not characters: a newline byte never occurs inside a multibyte UTF-8 character.
+				buffer = Buffer.concat([buffer, chunk]);
+				const end = buffer.indexOf(0x0a);
 				if ((end < 0 ? buffer.length : end) > limits.responseBytes) return fail("too_large", "Herdr's answer was too large");
 				if (end < 0) return;
 				let response: { id?: unknown; result?: Record<string, unknown>; error?: { code?: unknown; message?: unknown } };
 				try {
-					response = JSON.parse(buffer.slice(0, end));
+					response = JSON.parse(buffer.subarray(0, end).toString("utf8"));
 				} catch {
 					return fail("bad_response", "Herdr's answer was not JSON");
 				}
