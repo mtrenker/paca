@@ -60,6 +60,15 @@ describe("page state", () => {
 		assert.equal(uiState(entries, { running: true }).turns[0].steps[0].status, "running");
 	});
 
+	it("shows a request Paca refused to send as interrupted, not as a model failure", () => {
+		const entries = [user("1", "Stop at once"), message("2", { role: "assistant", stopReason: "error", errorMessage: "Not sent: Stopped by you.", content: [] })];
+		assert.deepEqual(uiState(entries).turns[0].notices, [{ tone: "warning", text: "The answer was interrupted." }]);
+	});
+
+	it("shows why a session could not be opened", () => {
+		assert.deepEqual(uiState([], { error: "Paca could not open this session: bad file" }).turns[0].notices, [{ tone: "error", text: "Paca could not open this session: bad file" }]);
+	});
+
 	it("shows a converted Durable error result by its message, and a failed model request as an error", () => {
 		const entries = [
 			user("1", "Read it"),

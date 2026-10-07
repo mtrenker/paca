@@ -15,12 +15,12 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { DraftStatus } from "@paca/contracts";
 import { NOTICE } from "./agent.ts";
+import { SESSION_ID, TITLE_MAX } from "./sessions.ts";
 import type { Store, StoredDraft } from "./store.ts";
 
 /** Drafts written before tool packages have no action; they are GitHub issue drafts. */
 export const LEGACY_ACTION = "github.create_issue";
-const RETAINED = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.sqlite$/;
-const TITLE_MAX = 120;
+const RETAINED = new RegExp(`^(${SESSION_ID.source.slice(1, -1)})\\.sqlite$`);
 
 type LegacyMessage = { role: string; content?: unknown; timestamp?: number };
 type LegacyDraft = { id: string; action?: string; repository: string; title: string; body: string; status: DraftStatus; createdAt: string; decidedAt?: string; number?: number; url?: string; error?: string };

@@ -11,7 +11,7 @@ import { type AgentSession, type ModelRuntime, SessionManager } from "@earendil-
 import type { DraftStatus, PageState, SessionSummary } from "@paca/contracts";
 import type { Propose, UserTools, WriteAction, WriteOutcome } from "@paca/extension";
 import { interrupted, LIMITS, type Limits, NOTICE, openAgent, type PackageTools, type Run } from "./agent.ts";
-import { createFeed, type Feed } from "./server.ts";
+import { createFeed, type Feed } from "./feed.ts";
 import type { Store, StoredDraft } from "./store.ts";
 import { type Describe, uiState } from "./view.ts";
 
@@ -42,6 +42,8 @@ interface Live {
 	busy: boolean;
 	run?: Run & { timer?: NodeJS.Timeout };
 	retry?: string;
+	/** Why the session could not be opened, shown on the page until an open succeeds. */
+	error?: string;
 	feed: Feed<PageState>;
 }
 
@@ -80,7 +82,7 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 			const created: Live = {
 				busy: false,
 				feed: createFeed(() =>
-					uiState(created.session?.sessionManager.getBranch() ?? [], { running: created.busy, partial: created.session?.state.streamingMessage, retry: created.retry, drafts: store.drafts(id), describe }),
+					uiState(created.session?.sessionManager.getBranch() ?? [], { running: created.busy, partial: created.session?.state.streamingMessage, retry: created.retry, error: created.error, drafts: store.drafts(id), describe }),
 				),
 			};
 			live = created;
@@ -112,11 +114,17 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 			});
 			if (interrupted(manager.getBranch())) await notice(session, "This answer was interrupted because Paca restarted. Ask again to continue.");
 			live.session = session;
+			live.created = undefined;
+			live.error = undefined;
 			return session;
 		})());
-		// A failed open can be tried again.
-		opening.catch(() => {
-			if (live.agent === opening) live.agent = undefined;
+		// A failed open can be tried again; until then the page says why, and the log has the detail.
+		opening.catch((error) => {
+			if (live.agent !== opening) return;
+			live.agent = undefined;
+			live.error = `Paca could not open this session: ${(error as Error)?.message ?? error}`;
+			log.error(`paca: session ${id}: ${live.error}`);
+			live.feed.changed();
 		});
 		return opening;
 	}
@@ -150,9 +158,10 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 			run.timer.unref?.();
 			await session.prompt(text, { expandPromptTemplates: false });
 		} catch (error) {
-			// prompt() throws only before the question is in the transcript (no credential, compacting).
-			failed = String((error as Error)?.message ?? error);
-			log.error(`paca: session ${id}: ${failed}`);
+			// Opening failed (logged and shown by open()), or prompt() threw, which it does only before
+			// the question is in the transcript (no credential, compacting). Either way it can be asked again.
+			if (session) failed = String((error as Error)?.message ?? error);
+			if (failed) log.error(`paca: session ${id}: ${failed}`);
 			store.forgetRequest(id, requestId);
 		} finally {
 			clearTimeout(run.timer);
@@ -210,18 +219,18 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 			if (row) return store.hasRequest(id, requestId) ? { duplicate: true } : { refused: "exists" };
 			// The file appears with the first message; until then the id is reserved by its row.
 			const manager = SessionManager.create(piDir, sessionsDir, { id });
-			store.create({ id, file: relative(userDir, manager.getSessionFile()!), title: text.slice(0, TITLE_MAX) }, requestId);
+			if (!store.create({ id, file: relative(userDir, manager.getSessionFile()!), title: text.slice(0, TITLE_MAX) }, requestId)) return { refused: "exists" };
 			liveOf(id).created = manager;
 			begin(id, text, requestId);
 			return { duplicate: false };
 		},
 		/** A question to a saved session. A repeated request id is answered once. */
 		ask(id: string, text: string, requestId: string): { duplicate: boolean } | Refused<"not-found" | "busy"> {
-			const row = store.session(id);
-			if (row?.state !== "active") return { refused: "not-found" };
+			if (store.session(id)?.state !== "active") return { refused: "not-found" };
 			if (store.hasRequest(id, requestId)) return { duplicate: true };
 			if (busy(id)) return { refused: "busy" };
-			store.admit(id, requestId);
+			// The statement decides; the reads above only choose the answer to a refusal.
+			if (!store.admit(id, requestId)) return { refused: "not-found" };
 			begin(id, text, requestId);
 			return { duplicate: false };
 		},
@@ -234,7 +243,8 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 		async watch(id: string): Promise<Feed<PageState> | undefined> {
 			if (store.session(id)?.state !== "active") return undefined;
 			const live = liveOf(id);
-			await open(id, live);
+			// A session that cannot be opened is still shown, with the reason (open() records it).
+			await open(id, live).catch(() => {});
 			return live.feed;
 		},
 		/**

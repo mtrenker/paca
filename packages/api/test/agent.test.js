@@ -25,10 +25,12 @@ async function answered({ responses, limits, gh, question = "hi" }) {
 }
 
 describe("one session's answer", () => {
-	it("offers only the enabled packages' tools and Paca's prompt, and discovers nothing on disk", async () => {
+	it("offers only the enabled packages' tools and Paca's prompt, and discovers nothing on disk", async (t) => {
 		const dir = await tempDir();
 		// Decoys Pi would load if discovery were on: context files, a skill, an extension adding a tool, settings.
 		const home = join(dir, "home");
+		const savedHome = process.env.HOME;
+		t.after(() => (process.env.HOME = savedHome));
 		process.env.HOME = home;
 		for (const agentDir of [join(dir, "pi"), join(home, ".pi", "agent")]) {
 			await mkdir(join(agentDir, "skills", "decoy"), { recursive: true });

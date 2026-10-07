@@ -3,7 +3,8 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { createSessions, SESSION_COOKIE } from "../src/auth.ts";
-import { createApp, createFeed } from "../src/server.ts";
+import { createFeed } from "../src/feed.ts";
+import { createApp } from "../src/server.ts";
 
 const ISSUER = "https://id.example.test/application/o/paca/";
 const PUBLIC = "https://paca.example.test:8443";

@@ -43,6 +43,8 @@ export interface Live {
 	/** The assistant message being streamed, while answering. */
 	partial?: unknown;
 	retry?: string;
+	/** Why the session could not be opened. */
+	error?: string;
 	drafts?: readonly StoredDraft[];
 	describe?: Describe;
 }
@@ -72,7 +74,7 @@ function resultSummary(message: Message, label: ToolLabel | undefined): string {
 	return label?.detail?.(body) ?? "";
 }
 
-export function uiState(entries: readonly Entry[], { running = false, partial, retry, drafts = [], describe = NO_TOOLS }: Live = {}): PageState {
+export function uiState(entries: readonly Entry[], { running = false, partial, retry, error, drafts = [], describe = NO_TOOLS }: Live = {}): PageState {
 	const toolLabel = (call: Block) => {
 		const label = describe.labels[call.name ?? ""];
 		return label ? label.label(call.arguments ?? {}) : `Refused tool ${call.name}`;
@@ -115,8 +117,9 @@ export function uiState(entries: readonly Entry[], { running = false, partial, r
 				}
 				const said = text(message.content).trim();
 				if (said) t.answer = t.answer ? `${t.answer}\n\n${said}` : said;
-				// Stop, a limit and a restart abort the request; Paca's notice after it says why.
-				if (message.stopReason === "aborted" || (message.stopReason === "error" && /aborted/i.test(message.errorMessage ?? ""))) t.notices.push({ tone: "warning", text: "The answer was interrupted." });
+				// Stop, a limit and a restart abort the request, or Paca refuses to send it ("Not sent: ...");
+				// Paca's notice after it says why.
+				if (message.stopReason === "aborted" || (message.stopReason === "error" && /aborted|^Not sent:/i.test(message.errorMessage ?? ""))) t.notices.push({ tone: "warning", text: "The answer was interrupted." });
 				else if (message.stopReason === "error") t.notices.push({ tone: "error", text: `The model request failed: ${message.errorMessage ?? "unknown error"}` });
 				break;
 			}
@@ -140,6 +143,7 @@ export function uiState(entries: readonly Entry[], { running = false, partial, r
 		}
 	}
 	if (running && turn && retry) turn.retry = retry.slice(0, 240);
+	if (error) current().notices.push({ tone: "error", text: error.slice(0, 300) });
 	// Steps still marked running after the answer ended were cut off.
 	if (!running) for (const step of tools.values()) if (step.status === "running") step.status = "interrupted";
 

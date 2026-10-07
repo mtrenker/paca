@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import type { PageState, SessionInfo, SessionSummary } from "@paca/contracts";
 import type { Oidc, Session, Sessions } from "./auth.ts";
+import type { Feed } from "./feed.ts";
+import { SESSION_ID } from "./sessions.ts";
 
 const SECURITY_HEADERS = {
 	"Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
@@ -18,7 +20,6 @@ const SECURITY_HEADERS = {
 const STATIC: Record<string, ["public" | "script", string]> = { "/app.js": ["script", "text/javascript"], "/style.css": ["public", "text/css"], "/icon.svg": ["public", "image/svg+xml"] };
 const MAX_BODY = 16 * 1024;
 const MAX_QUESTION = 4000;
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SESSION_ROUTE = /^\/api\/sessions\/([^/]+)\/(messages|stop|delete|drafts\/approve|drafts\/dismiss)$/;
 /** Routes of the single-conversation page; a page loaded before the update gets told to reload. */
 const OLD_ROUTES = new Set(["POST /api/messages", "POST /api/stop", "POST /api/drafts/approve", "POST /api/drafts/dismiss"]);
@@ -223,53 +224,4 @@ export function createApp({ config, sessions, oidc, users, web, log = console }:
 			else res.end();
 		});
 	});
-}
-
-/** The latest value of something the page shows, fanned out, throttled, to every open stream. */
-export type Feed<T> = ReturnType<typeof createFeed<T>>;
-
-export function createFeed<T>(compute: () => T, intervalMs = 120) {
-	let timer: NodeJS.Timeout | undefined;
-	let ended = false;
-	const listeners = new Set<(value: T) => void>();
-	const enders = new Set<() => void>();
-	const dispose = () => {
-		ended = true;
-		clearTimeout(timer);
-		listeners.clear();
-		enders.clear();
-	};
-	return {
-		current: () => compute(),
-		/** `onEnd` runs when the feed ends, at once if it already has. */
-		subscribe(fn: (value: T) => void, onEnd?: () => void) {
-			if (ended) {
-				onEnd?.();
-				return () => {};
-			}
-			listeners.add(fn);
-			if (onEnd) enders.add(onEnd);
-			return () => {
-				listeners.delete(fn);
-				if (onEnd) enders.delete(onEnd);
-			};
-		},
-		changed() {
-			if (timer || ended) return;
-			timer = setTimeout(() => {
-				timer = undefined;
-				const latest = compute();
-				for (const fn of listeners) fn(latest);
-			}, intervalMs);
-		},
-		/** Nothing more will change; subscribers are told once (a deleted session's `gone`). */
-		end() {
-			if (ended) return;
-			const told = [...enders];
-			dispose();
-			for (const fn of told) fn();
-		},
-		/** Stops updates at shutdown without telling subscribers anything. */
-		dispose,
-	};
 }

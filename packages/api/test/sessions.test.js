@@ -2,7 +2,7 @@
 // the deletion contract with its races (docs/design/multi-session.md).
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { call, fauxModel, held, idle, newId, openUser, stateOf, stubGitHub, tempDir, text, until } from "./helpers.js";
@@ -85,6 +85,35 @@ describe("sessions at the same time", () => {
 		await idle(sessions, b);
 		const stateB = await stateOf(sessions, b);
 		assert.deepEqual([stateB.turns[0].answer, stateB.turns[0].notices], ["B answer", []]);
+	});
+
+	it("shows a Stop that arrives before the session opened as interrupted, and sends nothing", async () => {
+		const { sessions, model } = await user([text("never sent")]);
+		const a = newId();
+		sessions.start(a, "A: stop at once", "request-a");
+		sessions.stop(a);
+		await idle(sessions, a);
+		const [turn] = (await stateOf(sessions, a)).turns;
+		assert.equal(model.faux.state.callCount, 0);
+		assert.deepEqual(turn.notices.map((n) => [n.tone, n.text]), [["warning", "The answer was interrupted."], ["warning", "Stopped by you."]]);
+	});
+
+	it("shows why a session cannot be opened, and lets the question be asked again", async () => {
+		const first = await user([text("one")]);
+		const a = newId();
+		first.sessions.start(a, "A: one", "request-a");
+		await idle(first.sessions, a);
+		const file = join(first.dir, first.store.session(a).file);
+		await first.sessions.close();
+		await writeFile(file, "not a session file\n");
+
+		const again = await user([text("two")], { dir: first.dir });
+		const shown = await stateOf(again.sessions, a);
+		assert.match(shown.turns.at(-1).notices.at(-1).text, /^Paca could not open this session: /);
+		assert.deepEqual(again.sessions.ask(a, "A: two", "request-a2"), { duplicate: false });
+		await idle(again.sessions, a);
+		assert.equal(again.store.hasRequest(a, "request-a2"), false, "the question can be asked again");
+		assert.equal(again.model.faux.state.callCount, 0);
 	});
 
 	it("counts each session's model requests against its own answer", async () => {

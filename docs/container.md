@@ -186,7 +186,12 @@ continues; watch `docker logs paca` for the lines above.
 which file: `sqlite3 /data/users/<id>/paca.db "select id, title, legacy_file from sessions"`.
 Deleting that session in the page also deletes its retained copy. A `paca.sqlite` on one of the
 old paths after the upgrade was written by an older image; the next start converts it into
-another session, or moves it aside if it is empty.
+another session, or moves it aside if it is empty. `/data/github-workflow.json` from before the
+upgrade is an unused cache now and can be deleted.
+
+A session that cannot be opened, for example because its file was edited by hand, shows
+"Paca could not open this session" on the page; `docker logs paca` has the line
+`paca: session <session id>: ...` with the cause.
 
 ### Rolling back
 
