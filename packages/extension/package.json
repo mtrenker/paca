@@ -1,0 +1,11 @@
+{
+  "name": "@paca/extension",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "peerDependencies": {
+    "@earendil-works/chord": "1.0.3",
+    "@earendil-works/pi-durable": "1.0.3"
+  }
+}

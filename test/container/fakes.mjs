@@ -1,11 +1,11 @@
-// Disposable fakes for the container smoke test, served over HTTPS with a throwaway certificate:
-// an OIDC provider and an OpenAI-compatible model. Runs in its own container; never in the image.
-// The authorization code is the claims themselves, so the test can sign in without a browser.
+// Disposable fakes for the container smoke test and the local preview, served over HTTPS with a
+// throwaway certificate: an OIDC provider and an OpenAI-compatible model. Never part of the image.
+// The authorization code is the claims themselves, so the smoke test can sign in without a browser;
+// the preview's browser signs in through a page listing its synthetic users, on its own HTTPS port.
 import { createSign, generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:https";
 
-const ISSUER = "https://fakes:8443/";
 const CLIENT = { id: "paca-smoke", secret: "smoke-client-secret" };
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "smoke", alg: "ES256", use: "sig" };
@@ -23,12 +23,18 @@ async function readBody(req) {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
-/** First request of an answer: draft an issue. Once a tool result is back: answer in text. */
+/**
+ * First request of an answer: draft an issue in the first repository of the user's GitHub scope,
+ * as the system prompt states it. Once a tool result is back: answer in text.
+ */
 function completion(request) {
 	const toolResult = request.messages.some((m) => m.role === "tool");
 	const chunk = (delta, finish = null) => ({ id: "smoke", object: "chat.completion.chunk", created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }] });
-	if (toolResult) return [chunk({ role: "assistant", content: "Smoke answer: drafted one issue." }), chunk({}, "stop")];
-	const args = JSON.stringify({ repository: "example/repo", title: "Smoke draft", body: "Made by the container smoke test." });
+	const system = request.messages.filter((m) => m.role === "system" || m.role === "developer").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+	const repository = /^- ([\w.-]+\/[\w.-]+) \(Project /m.exec(system)?.[1];
+	if (toolResult || !repository) return [chunk({ role: "assistant", content: repository ? `Smoke answer: drafted one issue in ${repository}.` : "Smoke answer: no GitHub scope." }), chunk({}, "stop")];
+	const question = request.messages.filter((m) => m.role === "user").at(-1)?.content;
+	const args = JSON.stringify({ repository, title: "Smoke draft", body: `Made by the fake model for: ${typeof question === "string" ? question.slice(0, 200) : "a question"}` });
 	return [chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function", function: { name: "draft_issue", arguments: args } }] }), chunk({}, "tool_calls")];
 }
 
@@ -36,40 +42,77 @@ const json = (res, status, value) => {
 	res.writeHead(status, { "Content-Type": "application/json" });
 	res.end(JSON.stringify(value));
 };
+const escape = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-createServer({ key: readFileSync("/tls/key.pem"), cert: readFileSync("/tls/cert.pem") }, async (req, res) => {
-	const url = new URL(req.url, ISSUER);
-	const route = `${req.method} ${url.pathname}`;
-	console.log(`fakes: ${route}`);
-	if (route === "GET /.well-known/openid-configuration") {
-		return json(res, 200, {
-			issuer: ISSUER,
-			authorization_endpoint: `${ISSUER}authorize`,
-			token_endpoint: `${ISSUER}token`,
-			jwks_uri: `${ISSUER}jwks`,
-			response_types_supported: ["code"],
-			subject_types_supported: ["public"],
-			id_token_signing_alg_values_supported: ["ES256"],
-			code_challenge_methods_supported: ["S256"],
-			token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
-		});
-	}
-	if (route === "GET /jwks") return json(res, 200, { keys: [jwk] });
-	if (route === "POST /token") {
-		// The client secret must arrive at runtime through PACA_OIDC_CLIENT_SECRET.
-		const form = new URLSearchParams(await readBody(req));
-		const basic = `Basic ${Buffer.from(`${CLIENT.id}:${CLIENT.secret}`).toString("base64")}`;
-		const posted = form.get("client_id") === CLIENT.id && form.get("client_secret") === CLIENT.secret;
-		if (req.headers.authorization !== basic && !posted) return json(res, 401, { error: "invalid_client" });
-		const { sub, username, nonce } = JSON.parse(Buffer.from(form.get("code") ?? "", "base64url").toString("utf8"));
-		const now = Math.floor(Date.now() / 1000);
-		const claims = { iss: ISSUER, aud: CLIENT.id, sub, preferred_username: username, nonce, iat: now, exp: now + 300 };
-		return json(res, 200, { access_token: "smoke-access-token", token_type: "Bearer", expires_in: 300, id_token: idToken(claims) });
-	}
-	if (route === "POST /v1/chat/completions") {
-		res.writeHead(200, { "Content-Type": "text/event-stream" });
-		for (const chunk of completion(JSON.parse(await readBody(req)))) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-		return res.end("data: [DONE]\n\n");
-	}
-	json(res, 404, { error: "not found" });
-}).listen(8443, () => console.log("fakes: listening on 8443"));
+/**
+ * @param {object} options
+ * @param {string} options.issuer HTTPS origin with a trailing slash, also the model's base
+ * @param {number} options.port HTTPS port
+ * @param {{ key: Buffer, cert: Buffer }} options.tls
+ * @param {{ origin: string, port: number, users: { sub: string, username: string }[] }} [options.login]
+ *   a sign-in page for a browser, listing synthetic users, with the same certificate. Paca's OIDC
+ *   client accepts only an HTTPS authorization endpoint. Without it, /authorize is absent.
+ */
+export function startFakes({ issuer, port, tls, host, login, log = console.log }) {
+	const authorizationEndpoint = login ? `${login.origin}/authorize` : `${issuer}authorize`;
+	const api = createServer(tls, async (req, res) => {
+		const url = new URL(req.url, issuer);
+		const route = `${req.method} ${url.pathname}`;
+		log(`fakes: ${route}`);
+		if (route === "GET /.well-known/openid-configuration") {
+			return json(res, 200, {
+				issuer,
+				authorization_endpoint: authorizationEndpoint,
+				token_endpoint: `${issuer}token`,
+				jwks_uri: `${issuer}jwks`,
+				response_types_supported: ["code"],
+				subject_types_supported: ["public"],
+				id_token_signing_alg_values_supported: ["ES256"],
+				code_challenge_methods_supported: ["S256"],
+				token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+			});
+		}
+		if (route === "GET /jwks") return json(res, 200, { keys: [jwk] });
+		if (route === "POST /token") {
+			// The client secret must arrive at runtime through PACA_OIDC_CLIENT_SECRET.
+			const form = new URLSearchParams(await readBody(req));
+			const basic = `Basic ${Buffer.from(`${CLIENT.id}:${CLIENT.secret}`).toString("base64")}`;
+			const posted = form.get("client_id") === CLIENT.id && form.get("client_secret") === CLIENT.secret;
+			if (req.headers.authorization !== basic && !posted) return json(res, 401, { error: "invalid_client" });
+			const { sub, username, nonce } = JSON.parse(Buffer.from(form.get("code") ?? "", "base64url").toString("utf8"));
+			const now = Math.floor(Date.now() / 1000);
+			const claims = { iss: issuer, aud: CLIENT.id, sub, preferred_username: username, nonce, iat: now, exp: now + 300 };
+			return json(res, 200, { access_token: "smoke-access-token", token_type: "Bearer", expires_in: 300, id_token: idToken(claims) });
+		}
+		if (route === "POST /v1/chat/completions") {
+			res.writeHead(200, { "Content-Type": "text/event-stream" });
+			for (const chunk of completion(JSON.parse(await readBody(req)))) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+			return res.end("data: [DONE]\n\n");
+		}
+		json(res, 404, { error: "not found" });
+	}).listen(port, host, () => log(`fakes: listening on ${issuer}`));
+
+	// The browser's half of sign-in: pick a synthetic user, return to Paca with that user as the code.
+	const page = login
+		? createServer(tls, (req, res) => {
+				const url = new URL(req.url, login.origin);
+				if (url.pathname !== "/authorize") return json(res, 404, { error: "not found" });
+				const back = (user) => {
+					const target = new URL(url.searchParams.get("redirect_uri"));
+					target.searchParams.set("code", b64({ sub: user.sub, username: user.username, nonce: url.searchParams.get("nonce") }));
+					target.searchParams.set("state", url.searchParams.get("state") ?? "");
+					return target.href;
+				};
+				const links = login.users.map((u) => `<li><a href="${escape(back(u))}">Sign in as ${escape(u.username)}</a></li>`).join("");
+				res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+				res.end(`<!doctype html><meta name="viewport" content="width=device-width"><title>Fake sign-in</title><h1>Fake sign-in (preview only)</h1><ul>${links}</ul>`);
+			}).listen(login.port, host, () => log(`fakes: sign-in page on ${login.origin}/authorize`))
+		: undefined;
+
+	return { close: () => Promise.all([api, page].filter(Boolean).map((s) => new Promise((resolve) => s.close(resolve)))) };
+}
+
+// In the smoke test's container: fixed name, port and certificate.
+if (import.meta.main) {
+	startFakes({ issuer: "https://fakes:8443/", port: 8443, tls: { key: readFileSync("/tls/key.pem"), cert: readFileSync("/tls/cert.pem") } });
+}
