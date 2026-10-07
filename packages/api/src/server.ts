@@ -146,7 +146,7 @@ export function createApp({ config, sessions, oidc, users, web, log = console }:
 			if (typeof id !== "string" || !id || id.length > 200) return json(res, 400, { error: "Missing draft id." });
 			const result = route.endsWith("approve") ? await paca.approveDraft(id) : await paca.dismissDraft(id);
 			if (result.refused === "not-found") return json(res, 404, { error: "That draft does not exist." });
-			if (result.refused === "unavailable") return json(res, 409, { error: "That draft can't be created: its tool package is not enabled for you.", status: "proposed" });
+			if (result.refused === "unavailable") return json(res, 409, { error: "That can't be done now: its tool package is not enabled for you.", status: "proposed" });
 			if (result.refused) return json(res, 409, { error: `That draft is already ${result.refused}.`, status: result.refused });
 			return json(res, 200, result);
 		}

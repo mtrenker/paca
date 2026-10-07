@@ -5,9 +5,9 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createRegistry, defineDoc, defineExtension, GenerationTask, Harness, hook, section, type Storage, ToolTask } from "@earendil-works/pi-durable";
-import type { Propose, UserTools, WriteAction, WriteOutcome } from "@paca/extension";
+import type { Proposal, Propose, UserTools, WriteAction, WriteOutcome } from "@paca/extension";
 import type { DraftStatus } from "@paca/contracts";
-import { PERSONA } from "./persona.ts";
+import { persona } from "./persona.ts";
 
 export const LIMITS = { modelRequests: 12, toolCalls: 30, durationMs: 3 * 60_000 };
 export type Limits = typeof LIMITS;
@@ -15,13 +15,18 @@ const ctx = BACKGROUND_CONTEXT;
 
 export class LimitReached extends Error {}
 
-/** A stored draft. Drafts written before tool packages have no `action`; they are GitHub issue drafts. */
+/**
+ * A stored draft. Drafts written before tool packages have no `action`; they are GitHub issue drafts.
+ * `repository` holds the proposal's target, whatever the action; the name is kept so stored drafts
+ * keep their format.
+ */
 export type StoredDraft = {
 	id: string;
 	action?: string;
 	repository: string;
 	title: string;
 	body: string;
+	expect?: Record<string, string>;
 	status: DraftStatus;
 	createdAt: string;
 	decidedAt?: string;
@@ -47,9 +52,10 @@ export function proposeFor(packageName: string): Propose {
 			drafts.items[api.callId] ??= {
 				id: api.callId,
 				action: `${packageName}.${proposal.action}`,
-				repository: proposal.repository,
+				repository: proposal.target,
 				title: proposal.title,
 				body: proposal.body,
+				...(proposal.expect ? { expect: { ...proposal.expect } } : {}),
 				status: "proposed",
 				createdAt: new Date().toISOString(),
 			};
@@ -79,12 +85,14 @@ export async function openPaca({ storage, models, model, packages, limits = LIMI
 	const writes = new Map<string, WriteAction>();
 	for (const p of packages) for (const [name, action] of Object.entries(p.tools.writes ?? {})) writes.set(`${p.name}.${name}`, action);
 	const actionOf = (draft: StoredDraft) => writes.get(draft.action ?? LEGACY_ACTION);
+	// A plain copy: inside a commit, the draft is the transaction's view and ends with it.
+	const proposalOf = (draft: StoredDraft): Proposal => ({ action: draft.action ?? LEGACY_ACTION, target: draft.repository, title: draft.title, body: draft.body, ...(draft.expect ? { expect: { ...draft.expect } } : {}) });
 	// Counters for the run in progress; one conversation, one run at a time.
 	let run: { active: boolean; requests: number; tools: number; stopReason?: string; timer?: NodeJS.Timeout; settled?: Promise<unknown> } = { active: false, requests: 0, tools: 0 };
 
 	const Host = defineExtension({
 		name: "paca",
-		sections: [section("paca", () => PERSONA, { tag: false })],
+		sections: [section("paca", () => persona(packages.map((p) => p.name)), { tag: false })],
 		hooks: [
 			hook(GenerationTask, {
 				beforeRequest: () => {
@@ -118,7 +126,7 @@ export async function openPaca({ storage, models, model, packages, limits = LIMI
 	await root.commit(async (tx) => {
 		const drafts = await tx.doc(Drafts, root.id);
 		for (const draft of Object.values(drafts.items)) {
-			if (draft.status === "creating") Object.assign(draft, { status: "unknown", error: "Paca restarted while creating this issue." });
+			if (draft.status === "creating") Object.assign(draft, { status: "unknown", error: "Paca restarted before it recorded the outcome." });
 		}
 	}, ctx);
 
@@ -180,7 +188,7 @@ export async function openPaca({ storage, models, model, packages, limits = LIMI
 			if (!action) return { refused: "unavailable" } as const;
 			draft.status = "creating";
 			draft.decidedAt = new Date().toISOString();
-			return { action, proposal: { action: draft.action ?? LEGACY_ACTION, repository: draft.repository, title: draft.title, body: draft.body } };
+			return { action, proposal: proposalOf(draft) };
 		}, ctx);
 		if (!claim.action) return { refused: claim.refused };
 		let outcome: WriteOutcome;
@@ -190,8 +198,8 @@ export async function openPaca({ storage, models, model, packages, limits = LIMI
 			outcome = { status: "unknown", error: String((error as Error)?.message ?? error) };
 		}
 		if (outcome.status === "created") {
-			await setDraft(id, { status: "created", number: outcome.number, url: outcome.url });
-			return { status: "created", url: outcome.url };
+			await setDraft(id, outcome.url ? { status: "created", number: outcome.number, url: outcome.url } : { status: "created" });
+			return outcome.url ? { status: "created", url: outcome.url } : { status: "created" };
 		}
 		await setDraft(id, { status: outcome.status, error: outcome.error.slice(0, 300) });
 		return { status: outcome.status };
@@ -211,7 +219,7 @@ export async function openPaca({ storage, models, model, packages, limits = LIMI
 	/** How the page names tool calls and where it sends the user to check an unknown write. */
 	const describe = {
 		labels: Object.assign({}, ...packages.map((p) => p.tools.labels)) as UserTools["labels"],
-		checkUrl: (draft: StoredDraft) => actionOf(draft)?.checkUrl({ action: draft.action ?? LEGACY_ACTION, repository: draft.repository, title: draft.title, body: draft.body }),
+		checkUrl: (draft: StoredDraft) => actionOf(draft)?.checkUrl?.(proposalOf(draft)),
 	};
 
 	return {

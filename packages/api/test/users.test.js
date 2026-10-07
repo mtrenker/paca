@@ -80,6 +80,7 @@ describe("pre-refactor data", () => {
 		const [proposed] = mine.turns[2].drafts;
 		assert.deepEqual([created.status, created.url], ["created", "https://github.com/legacy/repo/issues/41"]);
 		assert.deepEqual([proposed.status, proposed.title, proposed.body], ["proposed", "Still proposed", "Exact legacy body."]);
+		assert.deepEqual([proposed.action, proposed.target], ["github.create_issue", "legacy/repo"]);
 
 		assert.deepEqual((await state(ALEX.subject)).turns, []);
 		assert.deepEqual(await alex.paca.approveDraft(proposed.id), { refused: "not-found" });

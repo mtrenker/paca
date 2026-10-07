@@ -3,7 +3,7 @@
 // the server; the page sees only which evidence was read and whether it was available.
 import type { DraftCard, PageState, Step, Turn } from "@paca/contracts";
 import type { ToolLabel } from "@paca/extension";
-import type { StoredDraft } from "./agent.ts";
+import { LEGACY_ACTION, type StoredDraft } from "./agent.ts";
 
 /** How the user's tool packages name their calls, and where to check an unknown write. */
 export interface Describe {
@@ -41,7 +41,7 @@ export interface View {
 const NO_TOOLS: Describe = { labels: {}, checkUrl: () => undefined };
 
 function draftCard(d: StoredDraft, describe: Describe): DraftCard {
-	const card: DraftCard = { id: d.id, repository: d.repository, title: d.title, body: d.body, status: d.status };
+	const card: DraftCard = { id: d.id, action: d.action ?? LEGACY_ACTION, target: d.repository, title: d.title, body: d.body, status: d.status };
 	if (d.url) Object.assign(card, { url: d.url, number: d.number });
 	if (d.error) card.error = d.error;
 	if (d.status === "unknown") card.checkUrl = describe.checkUrl(d);

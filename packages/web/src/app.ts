@@ -83,41 +83,76 @@ function renderTurn(turn: Turn, isLast: boolean) {
 	return section;
 }
 
-const DRAFT_KICKER: Record<string, string> = {
-	proposed: "Draft issue",
-	creating: "Creating issue…",
-	created: "Created issue",
-	failed: "Not created",
-	unknown: "Outcome unknown",
-	dismissed: "Dismissed",
+// How a card speaks about its write. A draft without a known action is a GitHub issue draft.
+interface CardWords {
+	kicker: Record<string, string>;
+	approve: string;
+	note: string;
+	sending: string;
+	done(draft: DraftCard): Node[];
+	failed(draft: DraftCard): string;
+	unknown(draft: DraftCard): Node[];
+	dismissed: string;
+}
+
+const ISSUE: CardWords = {
+	kicker: { proposed: "Draft issue", creating: "Creating issue…", created: "Created issue", failed: "Not created", unknown: "Outcome unknown", dismissed: "Dismissed" },
+	approve: "Create issue",
+	note: "Creates it on GitHub as you.",
+	sending: "Sending to GitHub…",
+	done: (d) => [link(d.url ?? "", `Open ${d.target}#${d.number}`)],
+	failed: (d) => `GitHub did not create it: ${d.error ?? "unknown reason"}. Ask Paca to draft it again if you still want it.`,
+	unknown: (d) => [el("span", "draft-note", "Paca can’t tell whether GitHub created it, so it won’t send it again. Check before drafting it again: "), link(d.checkUrl ?? "", `${d.target} issues`)],
+	dismissed: "Nothing was created.",
 };
+
+const PROMPT: CardWords = {
+	kicker: { proposed: "Prompt for an agent", creating: "Sending prompt…", created: "Prompt submitted", failed: "Not sent", unknown: "Outcome unknown", dismissed: "Dismissed" },
+	approve: "Send prompt",
+	note: "Types this into the agent and presses Enter, after checking it’s still the same agent.",
+	sending: "Checking the agent and typing…",
+	done: () => [el("span", "draft-note", "The agent received it. Paca doesn’t follow whether it finished; ask Paca to read its screen later.")],
+	failed: (d) => `${d.error ?? "Nothing was sent."} Ask Paca to propose it again if you still want it.`,
+	unknown: (d) => [el("span", "draft-note", `Paca can’t tell whether the agent received it, so it won’t send it again. ${d.error ?? ""}`.trim())],
+	dismissed: "Nothing was sent.",
+};
+
 const pendingDrafts = new Set<string>();
 
-// A proposed issue, shown exactly as it would be created: plain text, nothing interpreted.
+// A proposed write, shown exactly as it would be performed: plain text, nothing interpreted.
+// An issue shows its repository, title and body; a prompt its agent, directory and exact text.
 function renderDraft(draft: DraftCard) {
+	const prompt = draft.action === "herdr.send_prompt";
+	const words = prompt ? PROMPT : ISSUE;
+	const kicker = words.kicker[draft.status] ?? draft.status;
 	const card = el("article", `draft-card ${draft.status}`);
-	card.append(el("p", "draft-kicker", `${DRAFT_KICKER[draft.status] ?? draft.status} · ${draft.repository}`));
-	card.append(el("h3", "draft-title", draft.title));
-	if (draft.status !== "dismissed") card.append(el("p", "draft-body", draft.body || "(no description)"));
+	if (prompt) {
+		card.append(el("p", "draft-kicker", kicker), el("h3", "draft-title", draft.target));
+		if (draft.title) card.append(el("p", "draft-meta", draft.title));
+		if (draft.status !== "dismissed") card.append(el("pre", "draft-body draft-prompt", draft.body));
+	} else {
+		card.append(el("p", "draft-kicker", `${kicker} · ${draft.target}`), el("h3", "draft-title", draft.title));
+		if (draft.status !== "dismissed") card.append(el("p", "draft-body", draft.body || "(no description)"));
+	}
 	const footer = el("div", "draft-footer");
 	if (draft.status === "proposed") {
-		const create = el("button", "", "Create issue");
+		const approve = el("button", "", words.approve);
 		const dismiss = el("button", "secondary", "Dismiss");
-		create.type = dismiss.type = "button";
-		create.disabled = dismiss.disabled = pendingDrafts.has(draft.id);
-		create.addEventListener("click", () => decide(draft.id, "approve"));
+		approve.type = dismiss.type = "button";
+		approve.disabled = dismiss.disabled = pendingDrafts.has(draft.id);
+		approve.addEventListener("click", () => decide(draft.id, "approve"));
 		dismiss.addEventListener("click", () => decide(draft.id, "dismiss"));
-		footer.append(create, dismiss, el("span", "draft-note", "Creates it on GitHub as you."));
+		footer.append(approve, dismiss, el("span", "draft-note", words.note));
 	} else if (draft.status === "creating") {
-		footer.append(el("span", "draft-note", "Sending to GitHub…"));
+		footer.append(el("span", "draft-note", words.sending));
 	} else if (draft.status === "created") {
-		footer.append(link(draft.url ?? "", `Open ${draft.repository}#${draft.number}`));
+		footer.append(...words.done(draft));
 	} else if (draft.status === "failed") {
-		footer.append(el("span", "draft-note", `GitHub did not create it: ${draft.error ?? "unknown reason"}. Ask Paca to draft it again if you still want it.`));
+		footer.append(el("span", "draft-note", words.failed(draft)));
 	} else if (draft.status === "unknown") {
-		footer.append(el("span", "draft-note", "Paca can’t tell whether GitHub created it, so it won’t send it again. Check before drafting it again: "), link(draft.checkUrl ?? "", `${draft.repository} issues`));
+		footer.append(...words.unknown(draft));
 	} else if (draft.status === "dismissed") {
-		footer.append(el("span", "draft-note", "Nothing was created."));
+		footer.append(el("span", "draft-note", words.dismissed));
 	}
 	card.append(footer);
 	return card;
@@ -131,7 +166,7 @@ async function decide(id: string, action: "approve" | "dismiss") {
 		const response = await post(`/api/drafts/${action}`, { id });
 		if (!response.ok && response.status !== 409) showError((await response.json().catch(() => ({}))).error ?? "That didn’t work.");
 	} catch {
-		showError("Could not reach Paca. Reload to see whether the issue was created before trying again.");
+		showError("Could not reach Paca. Reload to see what happened before trying again.");
 	} finally {
 		pendingDrafts.delete(id);
 		render();

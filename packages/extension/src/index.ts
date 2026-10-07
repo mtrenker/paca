@@ -12,30 +12,41 @@ import type { PromptSection, ToolExecutionApi, ToolRegistration } from "@earendi
 export interface HostUser {
 	/** Stable id from config.json, such as "martin". */
 	readonly id: string;
-}
-
-/** One write for the user to approve: where, a title and a body, stored and created exactly as given. */
-export interface Proposal {
-	/** A write action of this package, such as "create_issue". */
-	readonly action: string;
-	readonly repository: string;
-	readonly title: string;
-	readonly body: string;
+	/** The host's operator (`"operator": true`). A package that controls the host offers tools only to them. */
+	readonly operator: boolean;
 }
 
 /**
- * What a write did. `failed` only when nothing was written (the service refused it, or it never
- * left this machine); `unknown` when it may have happened. Paca never sends an unknown write again.
+ * One write for the user to approve, stored and performed exactly as given. The card shows the
+ * target, title and body; `expect` is not shown.
+ */
+export interface Proposal {
+	/** A write action of this package, such as "create_issue". */
+	readonly action: string;
+	/** Where the write goes, as the card names it: "owner/name" for an issue, the agent for a prompt. */
+	readonly target: string;
+	/** One line under the target: an issue's title, the directory an agent works in. */
+	readonly title: string;
+	/** The exact content written: an issue's body, a prompt's text. */
+	readonly body: string;
+	/** What the action checks before writing, such as the identity of the agent the user saw. */
+	readonly expect?: Readonly<Record<string, string>>;
+}
+
+/**
+ * What a write did. `created` when it happened (an issue was created, a prompt was submitted);
+ * `failed` only when nothing was written (the service refused it, or it never left this machine);
+ * `unknown` when it may have happened. Paca never sends an unknown write again.
  */
 export type WriteOutcome =
-	| { readonly status: "created"; readonly url: string; readonly number?: number }
+	| { readonly status: "created"; readonly url?: string; readonly number?: number }
 	| { readonly status: "failed" | "unknown"; readonly error: string };
 
 export interface WriteAction {
 	/** Writes the approved proposal once. Throwing counts as `unknown`. */
 	execute(proposal: Proposal): Promise<WriteOutcome>;
-	/** Where the user can check whether an unknown write happened. */
-	checkUrl(proposal: Proposal): string;
+	/** Where the user can check whether an unknown write happened, when there is a page for it. */
+	checkUrl?(proposal: Proposal): string;
 }
 
 /** Stores a proposal for the user's approval, keyed by the calling tool call. Writes nothing else. */

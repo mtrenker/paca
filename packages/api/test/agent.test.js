@@ -136,7 +136,7 @@ describe("Issue drafts", () => {
 		assert.equal(sent.length, 0);
 		const [card] = (await state()).turns[0].drafts;
 		assert.equal(card.id, id);
-		assert.deepEqual([card.status, card.repository, card.title], ["proposed", "o/r", "Show failed checks"]);
+		assert.deepEqual([card.status, card.target, card.title], ["proposed", "o/r", "Show failed checks"]);
 	});
 
 	it("refuses a draft for a repository outside the scope", async () => {

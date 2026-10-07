@@ -38,7 +38,7 @@ export interface OpenUsersOptions {
 export function toolsFor(user: UserConfig, packages: LoadedPackage[], cacheDir: string): PackageTools[] {
 	const tools: PackageTools[] = [];
 	for (const { package: pkg, settings } of packages) {
-		const userTools = pkg.forUser({ user: { id: user.id }, settings, userSettings: user[pkg.name], cacheDir, propose: proposeFor(pkg.name) });
+		const userTools = pkg.forUser({ user: { id: user.id, operator: user.operator }, settings, userSettings: user[pkg.name], cacheDir, propose: proposeFor(pkg.name) });
 		if (userTools) tools.push({ name: pkg.name, tools: userTools });
 	}
 	return tools;
