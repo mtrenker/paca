@@ -52,7 +52,7 @@ export interface Live {
 const NO_TOOLS: Describe = { labels: {}, checkUrl: () => undefined };
 
 function draftCard(d: StoredDraft, describe: Describe): DraftCard {
-	const card: DraftCard = { id: d.id, repository: d.repository, title: d.title, body: d.body, status: d.status };
+	const card: DraftCard = { id: d.id, action: d.action, target: d.repository, title: d.title, body: d.body, status: d.status };
 	if (d.url) Object.assign(card, { url: d.url, number: d.number });
 	if (d.error) card.error = d.error;
 	if (d.status === "unknown") card.checkUrl = describe.checkUrl(d);

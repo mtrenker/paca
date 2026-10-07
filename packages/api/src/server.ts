@@ -50,8 +50,8 @@ const REFUSED: Record<string, [number, string]> = {
 	busy: [409, "Paca is still answering in this session. Stop it or wait."],
 	exists: [409, "That session already exists."],
 	deleting: [409, "That session is being deleted."],
-	creating: [409, "An issue of this session is being created. Wait for it, then delete."],
-	unavailable: [409, "That draft can't be created: its tool package is not enabled for you."],
+	creating: [409, "A write of this session is in progress. Wait for it, then delete."],
+	unavailable: [409, "That can't be done now: its tool package is not enabled for you."],
 };
 
 export interface AppDeps {

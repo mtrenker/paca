@@ -10,5 +10,5 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true
   },
-  "include": ["packages/api/src", "packages/contracts/src", "packages/extension/src", "packages/extension-github/src"]
+  "include": ["packages/api/src", "packages/contracts/src", "packages/extension/src", "packages/extension-github/src", "packages/extension-herdr/src"]
 }

@@ -4,7 +4,7 @@ import { githubTools } from "@paca/extension-github";
 import { uiState as reduce } from "../src/view.ts";
 
 const { labels, writes } = githubTools({ projects: [] }, () => {});
-const uiState = (entries, extra) => reduce(entries, { ...extra, describe: { labels, checkUrl: (d) => writes.create_issue.checkUrl(d) } });
+const uiState = (entries, extra) => reduce(entries, { ...extra, describe: { labels, checkUrl: (d) => writes.create_issue.checkUrl({ ...d, target: d.repository }) } });
 
 const draft = (id, status, extra = {}) => ({ id, sessionId: "s", action: "github.create_issue", repository: "o/r", title: `Title ${id}`, body: `Body ${id}`, status, createdAt: "2026-10-07T00:00:00Z", ...extra });
 const message = (id, message) => ({ type: "message", id, parentId: null, timestamp: "", message });

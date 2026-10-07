@@ -64,13 +64,13 @@ export function githubTools(github: GitHubAccess, propose: Propose): UserTools {
 			create_issue: {
 				async execute(proposal) {
 					try {
-						const issue = await github.createIssue(proposal.repository, { title: proposal.title, body: proposal.body });
+						const issue = await github.createIssue(proposal.target, { title: proposal.title, body: proposal.body });
 						return { status: "created", url: issue.url, number: issue.number };
 					} catch (error) {
 						return { status: error instanceof WriteRejected ? "failed" : "unknown", error: String((error as Error).message) };
 					}
 				},
-				checkUrl: (proposal) => `https://github.com/${proposal.repository}/issues?q=${encodeURIComponent("is:issue sort:created-desc")}`,
+				checkUrl: (proposal) => `https://github.com/${proposal.target}/issues?q=${encodeURIComponent("is:issue sort:created-desc")}`,
 			},
 		},
 		scope: { label: `${github.projects.length} Projects`, detail: repositories.map((r) => r.split("/")[1]).join(", ") },
@@ -113,7 +113,7 @@ function tools(github: GitHubAccess, propose: Propose) {
 				const repository = github.checkRepository(args.repository);
 				const title = args.title.trim();
 				if (!title) throw new Error("title must not be empty");
-				propose(toolCallId, ctx, { action: "create_issue", repository, title, body: args.body });
+				propose(toolCallId, ctx, { action: "create_issue", target: repository, title, body: args.body });
 				return text(`Draft for ${repository} shown to the user with Create and Dismiss. It is not created unless they approve it.`);
 			},
 		}),

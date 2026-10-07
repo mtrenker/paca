@@ -23,7 +23,7 @@ export const LEGACY_ACTION = "github.create_issue";
 const RETAINED = new RegExp(`^(${SESSION_ID.source.slice(1, -1)})\\.sqlite$`);
 
 type LegacyMessage = { role: string; content?: unknown; timestamp?: number };
-type LegacyDraft = { id: string; action?: string; repository: string; title: string; body: string; status: DraftStatus; createdAt: string; decidedAt?: string; number?: number; url?: string; error?: string };
+type LegacyDraft = { id: string; action?: string; repository: string; title: string; body: string; expect?: Record<string, string>; status: DraftStatus; createdAt: string; decidedAt?: string; number?: number; url?: string; error?: string };
 type Item = { message: LegacyMessage } | { notice: string };
 
 export interface ConvertOptions {

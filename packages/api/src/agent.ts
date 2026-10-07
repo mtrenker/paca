@@ -6,7 +6,7 @@
 import type { Model } from "@earendil-works/pi-ai";
 import { type AgentSession, createAgentSession, DefaultResourceLoader, type ExtensionAPI, type ModelRuntime, type SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { UserTools } from "@paca/extension";
-import { PERSONA } from "./persona.ts";
+import { persona } from "./persona.ts";
 
 export const LIMITS = { modelRequests: 12, toolCalls: 30, durationMs: 3 * 60_000 };
 export type Limits = typeof LIMITS;
@@ -42,7 +42,7 @@ export interface OpenAgentOptions {
 }
 
 export function systemPrompt(packages: PackageTools[]) {
-	return [PERSONA, ...packages.flatMap((p) => p.tools.prompt ?? [])].join("\n\n");
+	return [persona(packages.map((p) => p.name)), ...packages.flatMap((p) => p.tools.prompt ?? [])].join("\n\n");
 }
 
 export async function openAgent({ dir, sessionManager, modelRuntime, model, packages, limits, run }: OpenAgentOptions): Promise<AgentSession> {

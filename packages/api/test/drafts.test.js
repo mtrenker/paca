@@ -23,7 +23,7 @@ describe("issue drafts", () => {
 	it("drafting shows a card and writes nothing", async () => {
 		const { sent, draft } = await drafted();
 		assert.equal(sent.length, 0);
-		assert.deepEqual([draft.status, draft.repository, draft.title, draft.body], ["proposed", "o/r", "Show failed checks", "## Outcome\nNames of failed checks."]);
+		assert.deepEqual([draft.action, draft.status, draft.target, draft.title, draft.body], ["github.create_issue", "proposed", "o/r", "Show failed checks", "## Outcome\nNames of failed checks."]);
 	});
 
 	it("refuses a draft for a repository outside the scope", async () => {
@@ -77,7 +77,7 @@ describe("issue drafts", () => {
 		const model = await fauxModel(first.dir, []);
 		const { sessions } = await openUser({ dir: first.dir, model, gh: after.gh });
 		const [card] = (await stateOf(sessions, first.id)).turns[0].drafts;
-		assert.deepEqual([card.status, card.error], ["unknown", "Paca restarted while creating this issue."]);
+		assert.deepEqual([card.status, card.error], ["unknown", "Paca restarted before it recorded the outcome."]);
 		assert.deepEqual(await sessions.approveDraft(first.id, first.draft.id), { refused: "unknown" });
 		assert.equal(after.sent.length, 0);
 	});

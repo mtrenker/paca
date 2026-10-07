@@ -1,8 +1,10 @@
 // Smoke test for the built image: `npm run test:container -- <image>` (default paca:smoke).
 // Starts the real image as an ordinary container against disposable fakes (fakes.mjs) with
 // throwaway data, signs in through the fake OIDC provider and asks one question of the fake
-// model. Nothing reaches real GitHub, a real identity provider or a paid model. Every container,
-// network and volume it creates is named paca-smoke-<run id> and removed at the end.
+// model, then moves the operator to a users config with Herdr against a fake Herdr socket
+// (fake-herdr.mjs) and approves one prompt. Nothing reaches real GitHub, a real identity provider,
+// a paid model or a real terminal. Every container, network and volume it creates is named
+// paca-smoke-<run id> and removed at the end.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -10,6 +12,8 @@ import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { SAMPLE_AGENTS, startFakeHerdr } from "./fake-herdr.mjs";
+import { FAKE_PROMPT } from "./fakes.mjs";
 
 const image = process.argv[2] ?? "paca:smoke";
 const run = `paca-smoke-${randomBytes(4).toString("hex")}`;
@@ -56,13 +60,13 @@ async function setUp(tls) {
 }
 
 /** Starts Paca the way the docs do: loopback-only port, read-only root, no capabilities. */
-async function startApp(tls) {
+async function startApp(tls, extra = []) {
 	const name = `${run}-app${apps.length + 1}`;
 	apps.push(name);
 	await dockerWithSecrets("run", "-d", "--name", name, "--network", names.network, "-p", "127.0.0.1::4302",
 		"--read-only", "--tmpfs", "/tmp", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
 		"-v", `${names.volume}:/data`, "-v", `${join(tls, "cert.pem")}:/tls/cert.pem:ro`, "-e", "NODE_EXTRA_CA_CERTS=/tls/cert.pem",
-		...Object.keys(SECRETS).flatMap((k) => ["-e", k]), image);
+		...Object.keys(SECRETS).flatMap((k) => ["-e", k]), ...extra, image);
 	const port = (await docker("port", name, "4302/tcp")).split("\n")[0].split(":").pop();
 	const base = `http://127.0.0.1:${port}`;
 	for (let i = 0; ; i++) {
@@ -127,7 +131,57 @@ async function waitFor(base, cookie, session, done) {
 	throw new Error("event stream ended");
 }
 
-const answered = (event, state) => event === "state" && !state.running && state.turns.some((t) => t.question === "Smoke question" && t.answer && t.drafts.length === 1);
+const answeredWithDraft = (question) => (event, state) => event === "state" && !state.running && state.turns.some((t) => t.question === question && t.answer && t.drafts.length === 1);
+const answered = answeredWithDraft("Smoke question");
+
+/** Replaces /data/config.json, as an operator would with the copy command in docs/container.md. */
+async function writeConfig(config) {
+	await new Promise((resolve, reject) => {
+		const child = execFile("docker", ["run", "--rm", "-i", "-v", `${names.volume}:/data`, "--entrypoint", "sh", image, "-c", "umask 077 && cat > /data/config.json"], (error) => (error ? reject(error) : resolve()));
+		child.stdin.end(JSON.stringify(config));
+	});
+}
+
+/**
+ * The operator moves to a users config with Herdr. The fake Herdr socket is bind-mounted read-only
+ * like the real one (docs/herdr.md); mode 0666 only because CI's host user is not uid 1000.
+ * `earlier` is the session the first containers answered, which must not reach the new card.
+ */
+async function checkHerdr(tls, cookie, earlier) {
+	const herdr = await startFakeHerdr({ path: join(tls, "herdr.sock"), mode: 0o666 });
+	try {
+		await writeConfig({
+			publicUrl: PUBLIC_URL,
+			oidc: { issuer: "https://fakes:8443/", clientId: "paca-smoke" },
+			model: "fake/fake-model",
+			extensions: { "@paca/extension-github": { piClean: "/opt/pi-clean" }, "@paca/extension-herdr": { socket: "/run/herdr.sock" } },
+			users: [{ id: "operator", subject: SUBJECT, operator: true, github: { projects: [{ owner: "example", number: 1, repository: "example/repo" }], serverLogin: true }, herdr: { roots: ["/home/preview/code"] } }],
+		});
+		const app = await startApp(tls, ["-v", `${herdr.path}:/run/herdr.sock:ro`]);
+		const info = await (await fetch(`${app.base}/api/session`, { headers: { cookie } })).json();
+		assert.match(info.scope, /Herdr agents/);
+		const post = (path, body) => fetch(`${app.base}${path}`, { method: "POST", headers: { cookie, origin: ORIGIN, "x-csrf-token": info.csrf, "content-type": "application/json" }, body: JSON.stringify(body) });
+		const session = randomUUID();
+		assert.equal((await post("/api/sessions", { id: session, text: "Smoke agent question", requestId: `smoke-agent-${run}` })).status, 202);
+		const state = await waitFor(app.base, cookie, session, answeredWithDraft("Smoke agent question"));
+		const card = state.turns.find((t) => t.question === "Smoke agent question").drafts[0];
+		assert.deepEqual([card.action, card.target, card.title, card.body, card.status], ["herdr.send_prompt", "claude in w1:p1", SAMPLE_AGENTS[0].cwd, FAKE_PROMPT, "proposed"]);
+		assert.deepEqual(herdr.prompts, []);
+		step("operator in a users config: Herdr agents listed through the read-only socket mount, prompt proposed in a new session, nothing sent");
+
+		assert.equal((await post(`/api/sessions/${earlier}/drafts/approve`, { id: card.id })).status, 404);
+		assert.deepEqual(herdr.prompts, []);
+		assert.deepEqual(await (await post(`/api/sessions/${session}/drafts/approve`, { id: card.id })).json(), { status: "created" });
+		assert.equal((await post(`/api/sessions/${session}/drafts/approve`, { id: card.id })).status, 409);
+		assert.deepEqual(herdr.prompts, [{ pane: "w1:p1", terminal: "term_fake01", text: FAKE_PROMPT }]);
+		const logs = await exec("docker", ["logs", app.name]).then((r) => r.stdout + r.stderr);
+		assert.ok(!logs.includes(FAKE_PROMPT), "the prompt appeared in the logs");
+		step("approval under another session refused (404); approved prompt sent once with the exact text; a second approval refused (409); prompt not in the logs");
+		await stopApp(app.name);
+	} finally {
+		await herdr.close();
+	}
+}
 
 async function main() {
 	const tls = await mkdtemp(join(tmpdir(), "paca-smoke-"));
@@ -188,6 +242,7 @@ async function main() {
 		assert.deepEqual(kept.turns.find((t) => t.question === "Smoke question").drafts[0], draft);
 		step(`new container ${second.name} on the same volume: session key, session and draft kept`);
 		await stopApp(second.name);
+		await checkHerdr(tls, cookie, session);
 		step("passed");
 	} catch (error) {
 		for (const name of [...apps, names.fakes]) {

@@ -45,7 +45,7 @@ const last = uiState(session.sessionManager.getBranch(), { describe: { labels, c
 for (const step of last?.steps ?? []) console.error(`- ${step.label}: ${step.status}${step.detail ? ` (${step.detail})` : ""}`);
 for (const notice of last?.notices ?? []) console.error(`! ${notice.text}`);
 if (run.stopReason) console.error(`! ${run.stopReason}`);
-for (const p of proposals) console.error(`draft for ${p.repository}, not created (approve drafts in the web page): ${p.title}`);
+for (const p of proposals) console.error(`proposal for ${p.target}, not performed (approve proposals in the web page): ${p.title}`);
 console.log(last?.answer || "(no answer)");
 console.error(`${run.stopReason ? "stopped" : "done"} in ${Math.round((Date.now() - started) / 1000)} s`);
 session.dispose();

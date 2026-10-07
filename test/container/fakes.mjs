@@ -23,24 +23,32 @@ async function readBody(req) {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
+export const FAKE_PROMPT = "Summarise in three lines where you are and what is left to do.";
+
 /**
- * First request of an answer: draft an issue in the first repository of the user's GitHub scope,
- * as the system prompt states it. Once a tool result is back: answer in text, word by word.
+ * A question that mentions an agent, from a user with Herdr scope: list the agents, then propose
+ * FAKE_PROMPT for the first one listed, then answer. Any other question: draft an issue in the
+ * first repository of the user's GitHub scope, as the system prompt states it, then answer. Answers
+ * stream word by word.
  */
 function completion(request) {
-	const asked = request.messages.findLastIndex((m) => m.role === "user");
-	const toolResult = request.messages.slice(asked).some((m) => m.role === "tool");
+	const turn = request.messages.slice(request.messages.findLastIndex((m) => m.role === "user"));
+	const tools = turn.filter((m) => m.role === "tool").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
 	const chunk = (delta, finish = null) => ({ id: "smoke", object: "chat.completion.chunk", created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }] });
+	const say = (answer) => [chunk({ role: "assistant", content: "" }), ...answer.split(/(?<= )/).map((word) => chunk({ content: word })), chunk({}, "stop")];
+	const use = (name, args) => [chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }), chunk({}, "tool_calls")];
 	const system = request.messages.filter((m) => m.role === "system" || m.role === "developer").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
-	const repository = /^- ([\w.-]+\/[\w.-]+) \(Project /m.exec(system)?.[1];
-	if (toolResult || !repository) {
-		const answer = repository ? `Smoke answer: drafted one issue in ${repository}.` : "Smoke answer: no GitHub scope.";
-		return [chunk({ role: "assistant", content: "" }), ...answer.split(/(?<= )/).map((word) => chunk({ content: word })), chunk({}, "stop")];
+	const content = turn[0]?.content;
+	const asked = typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
+	if (/^Herdr scope/m.test(system) && /agent/i.test(asked)) {
+		if (tools.length === 0) return use("list_agents", {});
+		const pane = tools.length === 1 && /^- .* in ([\w-]+:p\d+):/m.exec(tools[0])?.[1];
+		if (pane) return use("propose_prompt", { pane, prompt: FAKE_PROMPT });
+		return say(pane === undefined ? "Smoke answer: no agents in scope." : "Smoke answer: proposed a prompt for the first agent.");
 	}
-	const content = request.messages.filter((m) => m.role === "user").at(-1)?.content;
-	const question = typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
-	const args = JSON.stringify({ repository, title: "Smoke draft", body: `Made by the fake model for: ${question.slice(0, 200) || "a question"}` });
-	return [chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function", function: { name: "draft_issue", arguments: args } }] }), chunk({}, "tool_calls")];
+	const repository = /^- ([\w.-]+\/[\w.-]+) \(Project /m.exec(system)?.[1];
+	if (tools.length || !repository) return say(repository ? `Smoke answer: drafted one issue in ${repository}.` : "Smoke answer: no GitHub scope.");
+	return use("draft_issue", { repository, title: "Smoke draft", body: `Made by the fake model for: ${asked.slice(0, 200) || "a question"}` });
 }
 
 const json = (res, status, value) => {

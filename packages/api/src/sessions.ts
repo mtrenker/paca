@@ -9,7 +9,7 @@ import { join, relative } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { type AgentSession, type ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { DraftStatus, PageState, SessionSummary } from "@paca/contracts";
-import type { Propose, UserTools, WriteAction, WriteOutcome } from "@paca/extension";
+import type { Proposal, Propose, UserTools, WriteAction, WriteOutcome } from "@paca/extension";
 import { interrupted, LIMITS, type Limits, NOTICE, openAgent, type PackageTools, type Run } from "./agent.ts";
 import { createFeed, type Feed } from "./feed.ts";
 import type { Store, StoredDraft } from "./store.ts";
@@ -63,16 +63,16 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 	// Drafts are stored under the session the calling tool runs in. Pi's session id is Paca's.
 	const proposeFor = (packageName: string): Propose => (toolCallId, ctx, proposal) => {
 		const sessionId = ctx.sessionManager.getSessionId();
-		store.propose({ id: toolCallId, sessionId, action: `${packageName}.${proposal.action}`, repository: proposal.repository, title: proposal.title, body: proposal.body });
+		store.propose({ id: toolCallId, sessionId, action: `${packageName}.${proposal.action}`, repository: proposal.target, title: proposal.title, body: proposal.body, ...(proposal.expect ? { expect: { ...proposal.expect } } : {}) });
 		changed(sessionId);
 	};
 	const packages = toolsOf(proposeFor);
 	const writes = new Map<string, WriteAction>();
 	for (const p of packages) for (const [name, action] of Object.entries(p.tools.writes ?? {})) writes.set(`${p.name}.${name}`, action);
-	const proposalOf = (d: StoredDraft) => ({ action: d.action, repository: d.repository, title: d.title, body: d.body });
+	const proposalOf = (d: StoredDraft): Proposal => ({ action: d.action, target: d.repository, title: d.title, body: d.body, ...(d.expect ? { expect: d.expect } : {}) });
 	const describe: Describe = {
 		labels: Object.assign({}, ...packages.map((p) => p.tools.labels)) as UserTools["labels"],
-		checkUrl: (draft) => writes.get(draft.action)?.checkUrl(proposalOf(draft)),
+		checkUrl: (draft) => writes.get(draft.action)?.checkUrl?.(proposalOf(draft)),
 	};
 
 	const list = createFeed<SessionSummary[]>(() =>
@@ -298,7 +298,8 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 			if (outcome.status === "created") store.settle(id, draftId, { status: "created", number: outcome.number, url: outcome.url });
 			else store.settle(id, draftId, { status: outcome.status, error: outcome.error.slice(0, 300) });
 			changed(id);
-			return outcome.status === "created" ? { status: "created", url: outcome.url } : { status: outcome.status };
+			if (outcome.status !== "created") return { status: outcome.status };
+			return outcome.url ? { status: "created", url: outcome.url } : { status: "created" };
 		},
 		dismissDraft(id: string, draftId: string): { status: "dismissed" } | Refused<string> {
 			if (store.session(id)?.state !== "active") return { refused: "not-found" };

@@ -22,10 +22,13 @@ export interface Step {
 
 export type DraftStatus = "proposed" | "creating" | "created" | "failed" | "unknown" | "dismissed";
 
-/** A proposed write as its card shows it; approving creates exactly this. */
+/** A proposed write as its card shows it; approving performs exactly this. */
 export interface DraftCard {
 	id: string;
-	repository: string;
+	/** Which write, such as "github.create_issue" or "herdr.send_prompt"; the page words the card by it. */
+	action: string;
+	/** Where it goes: a repository, or an agent such as "claude in w7:p5". */
+	target: string;
 	title: string;
 	body: string;
 	status: DraftStatus;

@@ -24,7 +24,13 @@ process, and depends on the Pi SDK (pi-coding-agent 1.0.3), which changes often.
   shows each session with **Answering** while it answers and the number of drafts waiting.
   Sessions answer at the same time, each with its own Stop and limits, and persist across
   reloads, devices and restarts. **Delete** removes a session for good, after a confirmation that
-  lists the issues it created or may have created.
+  lists the issues it created or may have created (and, for the operator, the prompts it sent or
+  may have sent).
+- For the operator only, optionally: the coding agents running in their
+  [Herdr](https://herdr.dev), in configured directories. Paca lists them, reads what one shows on
+  screen, and proposes an exact prompt on a card; **Send prompt** types it into that agent once.
+  See [Herdr agents](docs/herdr.md), including why this gives Paca control of the host's
+  terminals.
 
 Not available yet: editing issues, labels, assignees, milestones and Project fields such as
 priority ([#6](https://github.com/mtrenker/paca/issues/6)).
@@ -169,6 +175,10 @@ npm test
      data paths), their OIDC `subject`, and their settings for each tool package under the
      package's name. `operator: true` marks you: the operator owns the conversation from before
      multi-user support (converted into one of their sessions) and is the user of `npm run ask`.
+   - `"herdr": { "roots": ["/absolute/dir"] }` on the operator, with
+     `"@paca/extension-herdr": { "socket": "/absolute/path/to/herdr.sock" }` under `extensions`,
+     turns on the Herdr tools for agents working in those directories. Only the operator can have
+     them; read [Herdr agents](docs/herdr.md) first.
    - Each `github.projects` entry names a Project and the one repository that user may read and
      create issues in for it.
    - Each user's GitHub access is their own: `"tokenEnv": "PACA_GH_TOKEN_<NAME>"` names an

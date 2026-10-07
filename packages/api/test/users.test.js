@@ -108,6 +108,7 @@ describe("converting the conversation written before multiple sessions", () => {
 		const [proposed] = mine.turns[2].drafts;
 		assert.deepEqual([created.status, created.url], ["created", "https://github.com/legacy/repo/issues/41"]);
 		assert.deepEqual([proposed.status, proposed.title, proposed.body], ["proposed", "Still proposed", "Exact legacy body."]);
+		assert.deepEqual([proposed.action, proposed.target], ["github.create_issue", "legacy/repo"]);
 
 		assert.deepEqual(alex.list.current(), []);
 		assert.equal(existsSync(legacyDir(dataDir, "alex")), false);

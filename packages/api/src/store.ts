@@ -22,7 +22,11 @@ export interface SessionRow {
 	legacyFile: string | null;
 }
 
-/** A proposed write, stored exactly as its card shows it. `id` is the tool call that made it. */
+/**
+ * A proposed write, stored exactly as its card shows it. `id` is the tool call that made it.
+ * `repository` holds the proposal's target whatever the action (a repository, an agent); the
+ * column keeps its name so stores written before other actions need no rename.
+ */
 export interface StoredDraft {
 	id: string;
 	sessionId: string;
@@ -30,6 +34,8 @@ export interface StoredDraft {
 	repository: string;
 	title: string;
 	body: string;
+	/** What the write action checks before writing; not shown on the card. */
+	expect?: Record<string, string>;
 	status: DraftStatus;
 	createdAt: string;
 	decidedAt?: string;
@@ -62,6 +68,7 @@ CREATE TABLE IF NOT EXISTS drafts (
 	repository TEXT NOT NULL,
 	title TEXT NOT NULL,
 	body TEXT NOT NULL,
+	expect TEXT,
 	status TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	decided_at TEXT,
@@ -96,6 +103,7 @@ function draftOf(r: Row): StoredDraft {
 		status: r.status as DraftStatus,
 		createdAt: String(r.created_at),
 	};
+	if (r.expect !== null) draft.expect = JSON.parse(String(r.expect));
 	if (r.decided_at !== null) draft.decidedAt = String(r.decided_at);
 	if (r.number !== null) draft.number = Number(r.number);
 	if (r.url !== null) draft.url = String(r.url);
@@ -107,6 +115,8 @@ export function openStore(file: string) {
 	const db = new DatabaseSync(file);
 	db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
 	db.exec(SCHEMA);
+	// Stores made before write actions could carry checks have no expect column.
+	if (!(db.prepare("PRAGMA table_info(drafts)").all() as Row[]).some((c) => c.name === "expect")) db.exec("ALTER TABLE drafts ADD COLUMN expect TEXT");
 	const one = (sql: string, ...params: (string | number | null)[]) => db.prepare(sql).get(...params) as Row | undefined;
 	const all = (sql: string, ...params: (string | number | null)[]) => db.prepare(sql).all(...params) as Row[];
 	const run = (sql: string, ...params: (string | number | null)[]) => db.prepare(sql).run(...params);
@@ -123,8 +133,8 @@ export function openStore(file: string) {
 	};
 	const insertDraft = (d: StoredDraft) =>
 		run(
-			"INSERT OR IGNORE INTO drafts (id, session_id, action, repository, title, body, status, created_at, decided_at, number, url, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			d.id, d.sessionId, d.action, d.repository, d.title, d.body, d.status, d.createdAt, d.decidedAt ?? null, d.number ?? null, d.url ?? null, d.error ?? null,
+			"INSERT OR IGNORE INTO drafts (id, session_id, action, repository, title, body, expect, status, created_at, decided_at, number, url, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			d.id, d.sessionId, d.action, d.repository, d.title, d.body, d.expect ? JSON.stringify(d.expect) : null, d.status, d.createdAt, d.decidedAt ?? null, d.number ?? null, d.url ?? null, d.error ?? null,
 		);
 
 	return {
@@ -192,7 +202,7 @@ export function openStore(file: string) {
 				now(), sessionId, id, sessionId,
 			).changes === 1,
 		/** At start: a write claimed but never recorded may or may not have happened. Never resend it. */
-		recoverCreating: () => run("UPDATE drafts SET status = 'unknown', error = 'Paca restarted while creating this issue.' WHERE status = 'creating'").changes,
+		recoverCreating: () => run("UPDATE drafts SET status = 'unknown', error = 'Paca restarted before it recorded the outcome.' WHERE status = 'creating'").changes,
 
 		/**
 		 * Marks an active session for deletion unless one of its drafts is being created. The caller
