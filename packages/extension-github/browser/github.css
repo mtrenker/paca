@@ -37,3 +37,13 @@
 .ext-github .gh-comments h3 { font-size: 0.9375rem; margin: 1rem 0 0.25rem; color: var(--muted); }
 .ext-github .gh-comment { padding: 0.5rem 0 0; }
 .ext-github .gh-comment .gh-meta { margin: 0; }
+
+.ext-github .gh-follow-up { margin: 1.5rem 0 0; padding: 0.875rem 1rem 1rem; border: 1px solid var(--line); border-radius: 0.5rem; background: var(--surface); }
+.ext-github .gh-follow-up h3 { margin: 0 0 0.25rem; font-size: 1rem; }
+.ext-github .gh-note { margin: 0 0 0.75rem; font-size: 0.875rem; color: var(--muted); }
+.ext-github .gh-form { display: grid; gap: 0.75rem; }
+.ext-github .gh-form textarea { font: inherit; padding: 0.5rem 0.625rem; border: 1px solid var(--line); border-radius: 0.375rem; background: var(--paper); color: var(--ink); resize: vertical; }
+.ext-github .gh-form button { justify-self: start; font: inherit; padding: 0.5rem 1.25rem; border-radius: 0.5rem; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.ext-github .gh-form button:disabled { opacity: 0.5; cursor: default; }
+.ext-github .gh-error { margin: 0; color: var(--error); font-size: 0.875rem; }
+.ext-github .gh-error:empty { display: none; }

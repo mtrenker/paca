@@ -146,6 +146,12 @@ const cardOf = (r: Row): StoredCard => ({
 	createdAt: String(r.created_at),
 });
 
+/** Whether two `expect` maps hold the same facts, whatever their key order. */
+function sameExpect(a: Record<string, string> | undefined, b: Readonly<Record<string, string>> | undefined) {
+	const canonical = (e: Readonly<Record<string, string>> | undefined) => JSON.stringify(Object.entries(e ?? {}).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+	return canonical(a) === canonical(b);
+}
+
 export function openStore(file: string) {
 	const db = new DatabaseSync(file);
 	db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
@@ -215,6 +221,39 @@ export function openStore(file: string) {
 		draft(sessionId: string, id: string): StoredDraft | undefined {
 			const row = one("SELECT * FROM drafts WHERE session_id = ? AND id = ?", sessionId, id);
 			return row && draftOf(row);
+		},
+		/**
+		 * Admits a page's proposal as the draft `page:<requestId>`, in one transaction (see
+		 * docs/design/frontend-extensions.md and #17, Contract 6). The request id is looked up across
+		 * every session first, so a retry that names another new session finds the draft it stored.
+		 * Otherwise the draft goes into `sessionId` while it is active, or, with `create`, into a new
+		 * session row made in the same transaction.
+		 */
+		admitPageDraft(
+			sessionId: string,
+			draft: Omit<StoredDraft, "sessionId" | "status" | "createdAt">,
+			create?: { file: string; title: string },
+		): { result: "inserted" | "created" | "duplicate"; sessionId: string } | { result: "conflict" | "deleting" | "not-found" } {
+			return transaction(() => {
+				const found = one("SELECT d.*, s.state AS session_state FROM drafts d LEFT JOIN sessions s ON s.id = d.session_id WHERE d.id = ? ORDER BY d.created_at LIMIT 1", draft.id);
+				if (found) {
+					if (found.session_state !== "active") return { result: "deleting" as const };
+					const stored = draftOf(found);
+					const same = stored.action === draft.action && stored.repository === draft.repository && stored.title === draft.title && stored.body === draft.body && sameExpect(stored.expect, draft.expect);
+					return same ? { result: "duplicate" as const, sessionId: stored.sessionId } : { result: "conflict" as const };
+				}
+				const row = one("SELECT state FROM sessions WHERE id = ?", sessionId);
+				if (row?.state === "deleting") return { result: "deleting" as const };
+				const at = now();
+				if (!row) {
+					if (!create) return { result: "not-found" as const };
+					run("INSERT INTO sessions (id, file, title, created_at, last_activity) VALUES (?, ?, ?, ?, ?)", sessionId, create.file, create.title, at, at);
+				} else {
+					run("UPDATE sessions SET last_activity = ? WHERE id = ?", at, sessionId);
+				}
+				insertDraft({ ...draft, sessionId, status: "proposed", createdAt: at });
+				return { result: row ? ("inserted" as const) : ("created" as const), sessionId };
+			});
 		},
 		/** Stores a proposal. A replayed tool call finds its draft instead of making another. */
 		propose: (draft: Omit<StoredDraft, "status" | "createdAt">) => void insertDraft({ ...draft, status: "proposed", createdAt: now() }),

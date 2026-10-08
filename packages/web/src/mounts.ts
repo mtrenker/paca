@@ -83,12 +83,26 @@ export function pageHref(pkg: string, page: string, params: Record<string, strin
 	return `/?${query}`;
 }
 
+/** What a context needs of the page: operation calls, proposal posts, navigation and fresh ids. */
+export interface ContextApi {
+	call(pkg: string, op: string, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+	/** POSTs JSON; resolves with the answer, rejects only when Paca could not be reached. */
+	send(path: string, body: unknown): Promise<{ ok: boolean; body: { error?: string; session?: string } | undefined }>;
+	go(href: string): void;
+	/** A lowercase UUID v4. */
+	uuid(): string;
+}
+
 /**
  * A context for one mount. `call` posts to the package's operation and rejects once `signal`
  * aborts; links and navigation stay within the package's own pages and keep the session.
+ * `propose` fixes its request id and target session (the mount's, or a new one) when it starts and
+ * reuses both on its one retry, so a lost answer cannot store a proposal twice; it then shows the
+ * session holding the draft. Dispose does not abort it: the proposal may already be stored.
  */
-export function hostContext(target: Target, signal: AbortSignal, api: { call(pkg: string, op: string, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>; go(href: string): void }): HostContext {
+export function hostContext(target: Target, signal: AbortSignal, api: ContextApi): HostContext {
 	const href = (page: string, params?: Record<string, string>) => pageHref(target.package, page, params, target.session);
+	let proposing = false;
 	return Object.freeze({
 		package: target.package,
 		session: target.session,
@@ -96,6 +110,22 @@ export function hostContext(target: Target, signal: AbortSignal, api: { call(pkg
 			if (signal.aborted) return Promise.reject(new Error("This card or page was closed."));
 			if (!/^[a-z][a-z0-9_-]*$/.test(op)) return Promise.reject(new Error(`no operation ${op}`));
 			return api.call(target.package, op, input, signal);
+		},
+		async propose(action: string, input: Record<string, unknown>) {
+			if (proposing) throw new Error("A proposal is already being sent.");
+			proposing = true;
+			try {
+				const session = target.session ?? api.uuid();
+				const body = { requestId: api.uuid(), package: target.package, action, input, ...(target.session ? {} : { start: true }) };
+				const path = `/api/sessions/${encodeURIComponent(session)}/proposals`;
+				const answer = await api.send(path, body).catch(() => api.send(path, body)).catch(() => {
+					throw new Error("Could not reach Paca. Open the session list to see whether the proposal arrived.");
+				});
+				if (!answer.ok || !answer.body?.session) throw new Error(answer.body?.error ?? "That didn’t work. Try again.");
+				api.go(`/?session=${encodeURIComponent(answer.body.session)}`);
+			} finally {
+				proposing = false;
+			}
 		},
 		href,
 		navigate: (page: string, params?: Record<string, string>) => api.go(href(page, params)),

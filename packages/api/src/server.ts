@@ -11,7 +11,7 @@ import { type Operation, OperationError } from "@paca/extension";
 import type { Oidc, Session, Sessions } from "./auth.ts";
 import type { Frontend } from "./extensions.ts";
 import type { Feed } from "./feed.ts";
-import { SESSION_ID } from "./sessions.ts";
+import { type PageProposal, SESSION_ID } from "./sessions.ts";
 
 const SECURITY_HEADERS = {
 	"Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
@@ -26,8 +26,10 @@ const EXT_ASSET = /^\/ext\/([a-z][a-z0-9-]*)\/(.+)$/;
 const EXT_OPERATION = /^\/api\/ext\/([a-z][a-z0-9-]*)\/([a-z][a-z0-9_-]*)$/;
 const OPERATION_MAX = 512 * 1024;
 const MAX_BODY = 16 * 1024;
+/** A page proposal carries an issue body of up to 20,000 characters, JSON-escaped. */
+const MAX_PROPOSAL_BODY = 128 * 1024;
 const MAX_QUESTION = 4000;
-const SESSION_ROUTE = /^\/api\/sessions\/([^/]+)\/(messages|stop|delete|drafts\/approve|drafts\/dismiss)$/;
+const SESSION_ROUTE = /^\/api\/sessions\/([^/]+)\/(messages|stop|delete|drafts\/approve|drafts\/dismiss|proposals)$/;
 /** Routes of the single-conversation page; a page loaded before the update gets told to reload. */
 const OLD_ROUTES = new Set(["POST /api/messages", "POST /api/stop", "POST /api/drafts/approve", "POST /api/drafts/dismiss"]);
 
@@ -47,6 +49,7 @@ export interface RouteUser {
 		approveDraft(id: string, draftId: string): Promise<Result>;
 		dismissDraft(id: string, draftId: string): Result;
 		watch(id: string): Promise<Feed<PageState> | undefined>;
+		proposeFromPage?(id: string, request: PageProposal): Promise<Result>;
 	};
 	info: Omit<SessionInfo, "csrf" | "name">;
 	/** The user's id, for log lines. */
@@ -63,6 +66,8 @@ const REFUSED: Record<string, [number, string]> = {
 	deleting: [409, "That session is being deleted."],
 	creating: [409, "A write of this session is in progress. Wait for it, then delete."],
 	unavailable: [409, "That can't be done now: its tool package is not enabled for you."],
+	"not-proposable": [404, "That can't be proposed here."],
+	conflict: [409, "That request was already used for a different proposal."],
 };
 
 export interface AppDeps {
@@ -97,12 +102,12 @@ export function createApp({ config, sessions, oidc, users, web, frontends = new 
 		return undefined;
 	}
 
-	async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
+	async function body(req: IncomingMessage, max = MAX_BODY): Promise<Record<string, unknown>> {
 		let size = 0;
 		const chunks: Buffer[] = [];
 		for await (const chunk of req) {
 			size += chunk.length;
-			if (size > MAX_BODY) throw Object.assign(new Error("too large"), { status: 413 });
+			if (size > max) throw Object.assign(new Error("too large"), { status: 413 });
 			chunks.push(chunk);
 		}
 		try {
@@ -169,6 +174,25 @@ export function createApp({ config, sessions, oidc, users, web, frontends = new 
 		} finally {
 			clearTimeout(timer);
 		}
+	}
+
+	/**
+	 * A page's exact proposal (#17, Contract 6), for a package the user's page lists. It is stored
+	 * as a draft for the existing approval card; nothing here writes anywhere else.
+	 */
+	async function propose(res: Res, user: RouteUser, id: string, fields: Record<string, unknown>) {
+		const { requestId, package: pkg, action, input, start } = fields;
+		if (typeof requestId !== "string" || !/^[\w-]{8,64}$/.test(requestId)) return json(res, 400, { error: "Missing request id." });
+		if (typeof input !== "object" || input === null || Array.isArray(input) || (start !== undefined && typeof start !== "boolean")) return json(res, 400, { error: "A proposal needs an input object." });
+		const ext = typeof pkg === "string" ? user.info.extensions?.find((e) => e.name === pkg) : undefined;
+		if (!ext || typeof action !== "string" || !user.sessions.proposeFromPage) return reply(res, { refused: "not-proposable" });
+		const result = await user.sessions.proposeFromPage(id, { requestId, package: ext.name, action, input: input as Record<string, unknown>, start: start === true, label: ext.nav?.label ?? ext.name });
+		if (result.refused === "operation") return json(res, Number(result.status), { error: result.error });
+		if (result.refused === "failed") {
+			log.error(`paca: extension ${ext.name} proposal ${action} failed for user ${user.id}: ${result.error}`);
+			return json(res, 500, { error: "Something went wrong on the server." });
+		}
+		return reply(res, result);
 	}
 
 	const reply = (res: Res, result: Result, status = 200) => {
@@ -266,7 +290,8 @@ export function createApp({ config, sessions, oidc, users, web, frontends = new 
 		if (match) {
 			const [, id, action] = match;
 			if (!SESSION_ID.test(id)) return reply(res, { refused: "not-found" });
-			const fields = await body(req);
+			const fields = await body(req, action === "proposals" ? MAX_PROPOSAL_BODY : MAX_BODY);
+			if (action === "proposals") return propose(res, user, id, fields);
 			if (action === "messages") {
 				const asked = question(fields);
 				if ("error" in asked) return json(res, 400, asked);

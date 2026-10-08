@@ -24,6 +24,8 @@ interface Issue extends IssueData {
 	author: string;
 	body: string;
 	comments: { author: string; createdAt: string; body: string }[];
+	/** The repositories in scope, which the follow-up form offers. */
+	repositories: string[];
 }
 
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
@@ -196,6 +198,57 @@ const home: PageMount = (container, { context }) => {
 	return { dispose: () => container.replaceChildren() };
 };
 
+/**
+ * A follow-up issue for the user to approve: repository, title and body exactly as submitted, sent
+ * as a create_issue proposal. The host stores it as a draft in the page's session, or in a new
+ * one, and shows it there; nothing is created on GitHub until the user approves the draft.
+ */
+function followUpForm(context: HostContext, issue: Issue) {
+	const section = el("section", "gh-follow-up");
+	section.setAttribute("aria-labelledby", "gh-follow-up-heading");
+	const heading = el("h3", "", "Propose follow-up issue");
+	heading.id = "gh-follow-up-heading";
+	const note = el("p", "gh-note", context.session ? "It goes to your open session as a draft. Nothing is created on GitHub until you approve it there." : "It opens a new session with the draft. Nothing is created on GitHub until you approve it there.");
+	const form = el("form", "gh-form");
+	const field = (label: string, control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement, id: string) => {
+		const wrap = el("div", "gh-field");
+		const l = el("label", "", label);
+		control.id = l.htmlFor = id;
+		wrap.append(l, control);
+		return wrap;
+	};
+	const repository = el("select", "");
+	for (const r of issue.repositories) repository.append(new Option(r, r, r === issue.repository, r === issue.repository));
+	const title = el("input", "");
+	title.required = true;
+	title.maxLength = 256;
+	const body = el("textarea", "");
+	body.rows = 5;
+	body.maxLength = 20_000;
+	body.value = `Follow-up to ${issue.repository}#${issue.number}.`;
+	const submit = el("button", "", "Propose");
+	submit.type = "submit";
+	const error = el("p", "gh-error");
+	error.setAttribute("role", "alert");
+	form.append(field("Repository", repository, "gh-follow-repository"), field("Title", title, "gh-follow-title"), field("Body", body, "gh-follow-body"), submit, error);
+	form.addEventListener("submit", async (event) => {
+		event.preventDefault();
+		error.textContent = "";
+		submit.disabled = true;
+		submit.textContent = "Sending…";
+		try {
+			// On success the page shows the session holding the draft, and this page goes away.
+			await context.propose("create_issue", { repository: repository.value, title: title.value, body: body.value });
+		} catch (e) {
+			error.textContent = (e as Error).message;
+			submit.disabled = false;
+			submit.textContent = "Propose";
+		}
+	});
+	section.append(heading, note, form);
+	return section;
+}
+
 /** One issue, read fresh: state, labels, author, update time, body and recent comments as plain text. */
 const issue: PageMount = (container, { params, context }) => {
 	const line = status("Loading…");
@@ -228,7 +281,7 @@ const issue: PageMount = (container, { params, context }) => {
 			}
 			article.append(comments);
 			line.textContent = "";
-			container.append(article);
+			container.append(article, followUpForm(context, d));
 		},
 		(error: Error) => {
 			if (!container.isConnected) return;

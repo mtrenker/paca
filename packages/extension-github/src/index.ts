@@ -5,7 +5,7 @@
 // are rendered by this package's browser entry (browser/).
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import { type CardInput, defineToolPackage, type JsonValue, type Operation, OperationError, type Propose, type Show, type UserTools } from "@paca/extension";
+import { type CardInput, defineToolPackage, type JsonValue, type Operation, OperationError, type Proposal, type Propose, type Show, type UserTools } from "@paca/extension";
 import { createGitHub, EvidenceUnavailable, formatIssue, type GitHub, type Label, type Project, WriteRejected } from "./github.ts";
 
 export interface GitHubSettings {
@@ -129,6 +129,8 @@ function operations(github: GitHubAccess): Record<string, Operation> {
 				labels: labelNames(issue.labels),
 				updatedAt: String(issue.updatedAt ?? ""),
 				body: clip(String(issue.body ?? ""), ISSUE_BODY_MAX),
+				// The follow-up form offers these, and only these, as the new issue's repository.
+				repositories: [...new Set(github.projects.map((p) => p.repository))].sort(),
 				comments: comments.map((c: any) => ({ author: String(c?.author?.login ?? "unknown"), createdAt: String(c?.createdAt ?? ""), body: clip(String(c?.body ?? ""), COMMENT_BODY_MAX) })),
 			} satisfies JsonValue;
 		},
@@ -151,6 +153,24 @@ function operations(github: GitHubAccess): Record<string, Operation> {
 			};
 		},
 	};
+}
+
+/**
+ * The exact create_issue proposal: a repository in scope, a title of 1 to 256 characters (trimmed)
+ * and a body of at most 20,000. `draft_issue` and the page's follow-up form both use it, so a tool's
+ * and a page's proposal are checked alike.
+ */
+export function issueProposal(github: Pick<GitHubAccess, "checkRepository">, input: Record<string, unknown>): Proposal {
+	let repository: string;
+	try {
+		repository = github.checkRepository(input.repository);
+	} catch (error) {
+		throw new OperationError(404, (error as Error).message);
+	}
+	const title = typeof input.title === "string" ? input.title.trim() : "";
+	if (!title || title.length > TITLE_MAX) throw new OperationError(400, `A title needs 1 to ${TITLE_MAX} characters.`);
+	if (typeof input.body !== "string" || input.body.length > BODY_MAX) throw new OperationError(400, `A body has at most ${BODY_MAX} characters.`);
+	return { action: "create_issue", target: repository, title, body: input.body };
 }
 
 /** One user's tools over their GitHub access. `show` is the host's; without it no card is shown. */
@@ -180,6 +200,7 @@ export function githubTools(github: GitHubAccess, propose: Propose, show?: Show)
 			},
 		},
 		operations: operations(github),
+		proposals: { create_issue: (input) => issueProposal(github, input) },
 		scope: { label: `${github.projects.length} Projects`, detail: repositories.map((r) => r.split("/")[1]).join(", ") },
 	};
 }
@@ -222,11 +243,9 @@ function tools(github: GitHubAccess, propose: Propose, show: Show | undefined) {
 				body: Type.String({ maxLength: BODY_MAX, description: "GitHub Markdown" }),
 			}),
 			execute: async (toolCallId, args, _signal, _onUpdate, ctx) => {
-				const repository = github.checkRepository(args.repository);
-				const title = args.title.trim();
-				if (!title) throw new Error("title must not be empty");
-				propose(toolCallId, ctx, { action: "create_issue", target: repository, title, body: args.body });
-				return text(`Draft for ${repository} shown to the user with Create and Dismiss. It is not created unless they approve it.`);
+				const proposal = issueProposal(github, args);
+				propose(toolCallId, ctx, proposal);
+				return text(`Draft for ${proposal.target} shown to the user with Create and Dismiss. It is not created unless they approve it.`);
 			},
 		}),
 	];

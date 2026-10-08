@@ -19,6 +19,13 @@ export interface HostContext {
 	 * JSON. Rejects with Error(message) from the API's `error`, and when the mount is disposed.
 	 */
 	call(op: string, input?: Record<string, unknown>): Promise<unknown>;
+	/**
+	 * Submits an exact proposal of one of the package's write actions, which the host stores as a
+	 * draft for the user's approval, in `session` or, without one, in a new session; then shows that
+	 * session. Retried once on a network failure. Rejects with Error(message), and at once while a
+	 * proposal of this mount is pending. Never aborted on dispose: a sent proposal may be stored.
+	 */
+	propose(action: string, input: Record<string, unknown>): Promise<void>;
 	/** The URL of one of the package's pages. Put it on a link with `data-paca-nav` to open it in place. */
 	href(page: string, params?: Record<string, string>): string;
 	/** Opens one of the package's pages. */

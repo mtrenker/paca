@@ -200,4 +200,53 @@ describe("page URLs and contexts", () => {
 		await assert.rejects(context.call("issues"), /closed/);
 		assert.equal(calls.length, 1);
 	});
+
+	/** A context whose posts answer from `answers` in turn: an object, or "offline" for a network failure. */
+	function proposing(target, answers) {
+		const sent = [];
+		const went = [];
+		let n = 0;
+		const context = hostContext(target, new AbortController().signal, {
+			call: async () => ({}),
+			send: async (path, body) => {
+				sent.push([path, body]);
+				const next = answers.shift();
+				if (next === "offline") throw new TypeError("fetch failed");
+				return next;
+			},
+			go: (href) => went.push(href),
+			uuid: () => `00000000-0000-4000-8000-00000000000${n++}`,
+		});
+		return { context, sent, went };
+	}
+
+	it("proposes into the page's session and then shows it", async () => {
+		const { context, sent, went } = proposing({ package: "github", session: "s1" }, [{ ok: true, body: { session: "s1", draft: "page:x", duplicate: false } }]);
+		await context.propose("create_issue", { title: "t" });
+		assert.deepEqual(sent, [["/api/sessions/s1/proposals", { requestId: "00000000-0000-4000-8000-000000000000", package: "github", action: "create_issue", input: { title: "t" } }]]);
+		assert.deepEqual(went, ["/?session=s1"]);
+	});
+
+	it("starts a new session without one, retrying once with the same request and session ids", async () => {
+		const { context, sent, went } = proposing({ package: "github" }, ["offline", { ok: true, body: { session: "first-session", duplicate: true } }]);
+		await context.propose("create_issue", { title: "t" });
+		assert.equal(sent.length, 2);
+		assert.deepEqual(sent[0], sent[1]);
+		assert.deepEqual(sent[0], ["/api/sessions/00000000-0000-4000-8000-000000000000/proposals", { requestId: "00000000-0000-4000-8000-000000000001", package: "github", action: "create_issue", input: { title: "t" }, start: true }]);
+		assert.deepEqual(went, ["/?session=first-session"], "the session holding the draft, whatever the retry named");
+	});
+
+	it("rejects with the API's error or after the retry fails, and refuses a second proposal while one is pending", async () => {
+		const refused = proposing({ package: "github", session: "s1" }, [{ ok: false, body: { error: "That session does not exist." } }]);
+		await assert.rejects(refused.context.propose("create_issue", {}), /That session does not exist/);
+		assert.deepEqual(refused.went, []);
+		const offline = proposing({ package: "github", session: "s1" }, ["offline", "offline"]);
+		await assert.rejects(offline.context.propose("create_issue", {}), /Could not reach Paca. Open the session list/);
+		assert.equal(offline.sent.length, 2);
+		const twice = proposing({ package: "github", session: "s1" }, [{ ok: true, body: { session: "s1" } }]);
+		const first = twice.context.propose("create_issue", {});
+		await assert.rejects(twice.context.propose("create_issue", {}), /already being sent/);
+		await first;
+		assert.equal(twice.sent.length, 1);
+	});
 });

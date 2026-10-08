@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { childEnv, createGitHub, EvidenceUnavailable, formatOverview, WriteRejected, WriteUnknown } from "../src/github.ts";
 import { OperationError } from "@paca/extension";
-import github_, { githubTools, issueCard } from "../src/index.ts";
+import github_, { githubTools, issueCard, issueProposal } from "../src/index.ts";
 
 const projects = [
 	{ owner: "o", number: 1, repository: "o/api" },
@@ -204,6 +204,31 @@ describe("operations for the GitHub pages", () => {
 		await assert.rejects(missing.issue({ repository: "o/api", number: 99 }), refused(404, /does not exist/));
 		const down = await ops(failing("rate limited"));
 		await assert.rejects(down.issues({}), refused(502, /GitHub could not be read: failed: gh error/));
+	});
+});
+
+describe("proposals from the GitHub pages", () => {
+	it("builds the same create_issue proposal as draft_issue for the same input", async () => {
+		const { gh } = await github(() => "{}");
+		const proposed = [];
+		const tools = githubTools(gh, (_id, _ctx, proposal) => proposed.push(proposal));
+		const input = { repository: "O/WEB", title: "  Follow up  ", body: "Follow-up to o/web#3.\n\n- [ ] exact" };
+		await tools.tools.find((t) => t.name === "draft_issue").execute("call_1", input, undefined, undefined, {});
+		assert.deepEqual(await tools.proposals.create_issue(input), proposed[0]);
+		assert.deepEqual(proposed[0], { action: "create_issue", target: "o/web", title: "Follow up", body: "Follow-up to o/web#3.\n\n- [ ] exact" });
+	});
+
+	it("refuses input the user can fix with its status, and never runs gh", async () => {
+		const { gh, calls } = await github(() => "{}");
+		const build = githubTools(gh, () => {}).proposals.create_issue;
+		const refused = (status, message) => (error) => error instanceof OperationError && error.status === status && message.test(error.message);
+		assert.throws(() => build({ repository: "someone/else", title: "t", body: "" }), refused(404, /outside Paca's scope/));
+		assert.throws(() => build({ repository: "o/api", title: "   ", body: "" }), refused(400, /title needs 1 to 256/));
+		assert.throws(() => build({ repository: "o/api", title: "t".repeat(257), body: "" }), refused(400, /title needs 1 to 256/));
+		assert.throws(() => build({ repository: "o/api", title: "t", body: "b".repeat(20_001) }), refused(400, /at most 20000/));
+		assert.throws(() => build({ repository: "o/api", title: "t" }), refused(400, /body/));
+		assert.deepEqual(issueProposal(gh, { repository: "o/api", title: "t", body: "b".repeat(20_000) }).body.length, 20_000);
+		assert.equal(calls.length, 0);
 	});
 });
 

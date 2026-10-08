@@ -33,6 +33,8 @@ interface Message {
 export interface Entry {
 	readonly type: string;
 	readonly id: string;
+	/** When the entry was written (ISO 8601); places page drafts among the questions. */
+	readonly timestamp?: string;
 	readonly message?: unknown;
 	readonly customType?: string;
 	readonly content?: string | readonly Block[];
@@ -52,12 +54,15 @@ export interface Live {
 }
 
 const NO_TOOLS: Describe = { labels: {}, checkUrl: () => undefined };
+/** The id prefix of drafts a page proposed (Contract 6); only that route writes it. */
+const PAGE_DRAFT = "page:";
 
 function draftCard(d: StoredDraft, describe: Describe): DraftCard {
 	const card: DraftCard = { id: d.id, action: d.action, target: d.repository, title: d.title, body: d.body, status: d.status };
 	if (d.url) Object.assign(card, { url: d.url, number: d.number });
 	if (d.error) card.error = d.error;
 	if (d.status === "unknown") card.checkUrl = describe.checkUrl(d);
+	if (d.id.startsWith(PAGE_DRAFT)) card.fromPage = true;
 	return card;
 }
 
@@ -86,6 +91,8 @@ export function uiState(entries: readonly Entry[], { running = false, partial, r
 	const tools = new Map<string, Step>();
 	const nameOfCall = new Map<string, string>();
 	const turnOfCall = new Map<string, Turn>();
+	/** When each question was asked, by its turn. */
+	const askedAt = new Map<Turn, string>();
 	const current = () => {
 		if (!turn) {
 			turn = { id: "orphan", question: null, steps: [], answer: "", notices: [], drafts: [], cards: [] };
@@ -105,6 +112,7 @@ export function uiState(entries: readonly Entry[], { running = false, partial, r
 			case "user":
 				turn = { id: entry.id, question: text(message.content), steps: [], answer: "", notices: [], drafts: [], cards: [] };
 				turns.push(turn);
+				if (entry.timestamp) askedAt.set(turn, entry.timestamp);
 				break;
 			case "assistant": {
 				const t = current();
@@ -150,12 +158,17 @@ export function uiState(entries: readonly Entry[], { running = false, partial, r
 	if (!running) for (const step of tools.values()) if (step.status === "running") step.status = "interrupted";
 
 	// A draft whose tool call is not in the transcript (a compacted legacy turn) is shown in one turn
-	// at the top, whatever its status, so a decision made there keeps its outcome and link.
+	// at the top, whatever its status, so a decision made there keeps its outcome and link. A draft a
+	// page proposed gets a turn of its own, before the first question asked after it.
 	const earlier: DraftCard[] = [];
 	for (const draft of drafts) {
 		const owner = turnOfCall.get(draft.id);
 		if (owner) owner.drafts.push(draftCard(draft, describe));
-		else earlier.push(draftCard(draft, describe));
+		else if (draft.id.startsWith(PAGE_DRAFT)) {
+			const page: Turn = { id: draft.id, question: null, steps: [], answer: "", notices: [], drafts: [draftCard(draft, describe)], cards: [] };
+			const after = turns.findIndex((t) => (askedAt.get(t) ?? "") > draft.createdAt);
+			turns.splice(after < 0 ? turns.length : after, 0, page);
+		} else earlier.push(draftCard(draft, describe));
 	}
 	if (earlier.length) turns.unshift({ id: "earlier-drafts", question: "Earlier drafts", steps: [], answer: "", notices: [], drafts: earlier, cards: [] });
 

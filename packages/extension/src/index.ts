@@ -113,6 +113,13 @@ export class OperationError extends Error {
 	}
 }
 
+/**
+ * Turns a page's input into the exact Proposal for one of the package's write actions, validating
+ * it and the user's scope. Throws OperationError(400 or 404, message) for input the user can fix.
+ * Never writes: the host stores the proposal for the user's approval, as for a tool's.
+ */
+export type ProposalBuilder = (input: Record<string, unknown>) => Proposal | Promise<Proposal>;
+
 /** How the page names a call of one tool in the evidence trail. */
 export interface ToolLabel {
 	label(args: Record<string, unknown>): string;
@@ -130,6 +137,8 @@ export interface UserTools {
 	readonly writes?: Readonly<Record<string, WriteAction>>;
 	/** Reads for the package's pages and cards (`context.call`), by name. */
 	readonly operations?: Readonly<Record<string, Operation>>;
+	/** Write actions a page may propose directly (`context.propose`). Each needs its `writes` entry too. */
+	readonly proposals?: Readonly<Record<string, ProposalBuilder>>;
 	/** A short line for the page header, such as "2 Projects", and its tooltip. */
 	readonly scope: { readonly label: string; readonly detail: string };
 }

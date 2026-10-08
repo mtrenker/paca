@@ -243,6 +243,8 @@ function renderTurns(turns: Turn[]) {
 	const shown = new Set<string>();
 	const cardIds = new Set<string>();
 	let previous: Element = $("empty");
+	// The answer in progress belongs to the last question, even when a page's draft sits after it.
+	const lastAsked = turns.findLast((t) => !t.id.startsWith("page:"));
 	for (const turn of turns) {
 		shown.add(turn.id);
 		let view = turnViews.get(turn.id);
@@ -253,7 +255,7 @@ function renderTurns(turns: Turn[]) {
 		}
 		if (previous.nextElementSibling !== view.section) previous.after(view.section);
 		previous = view.section;
-		renderTurn(view, turn, turn === turns.at(-1));
+		renderTurn(view, turn, turn === lastAsked);
 		let before: Element | null = null;
 		for (const card of turn.cards ?? []) {
 			cardIds.add(card.id);
@@ -332,7 +334,7 @@ const cards = createMounts<HTMLElement>({
 	fallback: renderCardFallback,
 	pageFallback: renderPageFallback,
 	remove: (container) => container.remove(),
-	context: (target, signal) => hostContext(target, signal, { call: callOperation, go }),
+	context: (target, signal) => hostContext(target, signal, { call: callOperation, send: sendJson, go, uuid: () => crypto.randomUUID() }),
 	warn: (message) => console.warn(message),
 });
 
@@ -342,6 +344,12 @@ async function callOperation(pkg: string, op: string, input: Record<string, unkn
 	const answer = await response.json().catch(() => undefined);
 	if (!response.ok) throw new Error(answer?.error ?? "That didn’t work. Try again.");
 	return answer;
+}
+
+/** POSTs a page's proposal; rejects only when Paca could not be reached. */
+async function sendJson(path: string, body: unknown) {
+	const response = await post(path, body);
+	return { ok: response.ok, body: await response.json().catch(() => undefined) };
 }
 
 /** A page whose package is not enabled for this user, or whose module or mount failed. */
@@ -414,6 +422,8 @@ function renderDraft(draft: DraftCard) {
 		card.append(el("p", "draft-kicker", `${kicker} · ${draft.target}`), el("h3", "draft-title", draft.title));
 		if (draft.status !== "dismissed") card.append(el("p", "draft-body", draft.body || "(no description)"));
 	}
+	// Exact text the user typed on a page; the model neither wrote nor saw it.
+	if (draft.fromPage) card.append(el("p", "draft-origin", "Proposed from a page, not by Paca."));
 	const footer = el("div", "draft-footer");
 	if (draft.status === "proposed") {
 		const approve = el("button", "", words.approve);

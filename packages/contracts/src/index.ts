@@ -55,6 +55,8 @@ export interface DraftCard {
 	error?: string;
 	/** Where to look when the outcome is unknown. */
 	checkUrl?: string;
+	/** Proposed from an extension page, not by Paca. */
+	fromPage?: boolean;
 }
 
 /**
