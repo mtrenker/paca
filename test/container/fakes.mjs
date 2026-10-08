@@ -127,6 +127,8 @@ export function startFakes({ issuer, port, tls, host, login, modelDelayMs = 0, l
 		? createServer(tls, (req, res) => {
 				const url = new URL(req.url, login.origin);
 				if (url.pathname !== "/authorize") return json(res, 404, { error: "not found" });
+				// A stray request, now that a proxy may reach this page: refuse it, never crash the preview.
+				if (!URL.canParse(url.searchParams.get("redirect_uri") ?? "")) return json(res, 400, { error: "redirect_uri is required" });
 				const back = (user) => {
 					const target = new URL(url.searchParams.get("redirect_uri"));
 					target.searchParams.set("code", b64({ sub: user.sub, username: user.username, nonce: url.searchParams.get("nonce") }));
