@@ -2,7 +2,7 @@
 // held until released or stopped, and a GitHub stub whose one write is recorded. Nothing here
 // reaches a real model, GitHub or the user's ~/.pi.
 import { randomUUID } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -85,3 +85,9 @@ export async function stateOf(sessions, id) {
 }
 
 export const idle = (sessions, id) => until(() => !sessions.busy(id));
+
+/** The example extension of docs/local-extensions.md: each file marked `<!-- file: path -->`, as shown. */
+export async function guideFiles() {
+	const guide = await readFile(join(import.meta.dirname, "..", "..", "..", "docs", "local-extensions.md"), "utf8");
+	return Object.fromEntries([...guide.matchAll(/<!-- file: (\S+) -->\n```\w*\n([\s\S]*?)\n```/g)].map(([, path, content]) => [path, `${content}\n`]));
+}

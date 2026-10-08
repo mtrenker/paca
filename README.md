@@ -40,6 +40,9 @@ process, and depends on the Pi SDK (pi-coding-agent 1.0.3), which changes often.
   screen, and proposes an exact prompt on a card; **Send prompt** types it into that agent once.
   See [Herdr agents](docs/herdr.md), including why this gives Paca control of the host's
   terminals.
+- Private extensions: tool packages, with cards and pages, kept in the data folder instead of
+  Paca's repository, for everyone or for one user. Paca loads them at start; see
+  [Local extensions](docs/local-extensions.md).
 
 Not available yet: editing issues, labels, assignees, milestones and Project fields such as
 priority ([#6](https://github.com/mtrenker/paca/issues/6)).
@@ -61,7 +64,8 @@ priority ([#6](https://github.com/mtrenker/paca/issues/6)).
   `models.json` and default model as the `pi` CLI, so any provider Pi supports should work,
   including Anthropic, OpenAI and llama.cpp. Paca has been tried only with Pi's `openai-codex`
   provider.
-- **Tools:** tool packages enabled in the config give the model its tools, and nothing else does:
+- **Tools:** tool packages enabled in the config, and [local extensions](docs/local-extensions.md)
+  in the data folder, give the model its tools, and nothing else does:
   Pi's coding tools are off, and Pi discovers no extensions, skills, prompt templates, context
   files or settings on disk. The system prompt is Paca's own. The GitHub package gives four tools
   and no shell, file or generic API access:
@@ -110,7 +114,9 @@ All runtime data is in `.data/` in the checkout, which Git ignores:
   empty;
 - `users/<id>/pi/`: an empty directory Paca gives Pi as its agent directory, so it finds nothing;
 - `session.key`: the key that signs session cookies, created on first start;
-- `users/<id>/github-workflow.json`, `models-store.json`: generated caches.
+- `users/<id>/github-workflow.json`, `models-store.json`: generated caches;
+- `local-extensions/<name>/` and `users/<id>/local-extensions/<name>/`: private extensions for
+  every user or for one, which you or an agent write ([Local extensions](docs/local-extensions.md)).
 
 A `paca.sqlite` from an earlier version is converted into a session at start and moved into
 `legacy/`. An `ask.sqlite` from an earlier version is no longer read.
@@ -186,7 +192,8 @@ npm test
    - `model` is optional. Without it Paca uses Pi's default model.
    - `extensions` lists the tool packages Paca loads, by npm package name, with their settings.
      Only packages installed with Paca can be listed; they run as trusted server code. Remove an
-     entry to turn its tools off for everyone.
+     entry to turn its tools off for everyone. Private extensions need no entry here; see
+     [Local extensions](docs/local-extensions.md).
    - `"disableFrontends": ["@paca/extension-github"]` (optional, top level) turns off the browser
      code of listed packages: their cards show plain text, their pages and side-list link are
      gone, and their tools keep working. Each entry must be a package under `extensions`.
@@ -299,7 +306,11 @@ they make no network calls. They cover:
   and the snapshot on reconnect;
 - issue drafts: drafting without writing, creating exactly the stored draft once (even with
   simultaneous approvals), dismissal, failed versus unknown outcomes, and a restart during a
-  create.
+  create;
+- local extensions in a data folder outside the checkout: the guide's example with the faux
+  model, each user's own tools, operations and frontend files (also for two users' extensions of
+  the same name), skipped and colliding extensions, host and own imports, and edits picked up by
+  a new process.
 
 ## Contributing and license
 

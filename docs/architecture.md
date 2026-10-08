@@ -88,8 +88,9 @@ has no owner field; it belonged to the operator and becomes one of the operator'
 
 A tool package is a trusted npm package installed with Paca whose default export is
 `defineToolPackage({ name, forUser })` from `@paca/extension`. The config lists enabled packages
-by name (`extensions`); nothing else is loaded, and paths are refused. Packages run as server
-code with the server's privileges: they are trusted, not sandboxed.
+by name (`extensions`), and paths are refused; the only other packages are
+[local extensions](#local-extensions) in the data folder. Packages run as server code with the
+server's privileges: they are trusted, not sandboxed.
 
 `forUser` receives the host-authenticated user (their id and whether they are the operator), the
 package's settings and that user's settings, and returns Pi tools (`defineTool` from
@@ -224,6 +225,42 @@ proves a framework bundle meets the same contract (below).
   never installed or shipped. `npm run test:browser` drives Chrome with `puppeteer-core` against
   the real server and page: its card keeps Preact state and focus across updates and is disposed
   once, its page calls an operation through the host, and nothing violates the CSP.
+
+## Local extensions
+
+Private tool packages in the data folder, written outside Paca's repository, for example by Pi
+([#19](https://github.com/mtrenker/paca/issues/19); the author's guide is
+[Local extensions](local-extensions.md)). `local-extensions.ts` reads them once at start:
+`<data>/local-extensions/<name>/` for every configured user, `<data>/users/<id>/local-extensions/<name>/`
+for that user only. The decisions:
+
+- **Same contract, same trust.** A local extension is a `defineToolPackage` default export like an
+  installed package, with tools, writes as proposals, operations and an optional prebuilt
+  frontend checked by the same code (`checkPackage` in `extensions.ts`). It is not sandboxed or
+  reviewed. Its package `settings` are `undefined`; `userSettings` is `users[].<name>`, from the
+  user's own keys only.
+- **Restart to update.** An edit takes effect at the next start, and the page needs a reload.
+  There is no watcher, reload signal or session rebuild; Martin accepted the manual restart.
+  `npm run check-extensions` loads and binds the tool packages as a start would, in a new
+  process, to check an edit first; it runs the extensions' code but checks nothing else of a start.
+- **Skipped, not fatal.** A local extension that fails to load, collides or has a malformed
+  manifest is skipped with one log line, and one whose `forUser` throws, returns a malformed
+  result (tools need Pi's `name`, `label`, `description`, `parameters` and `execute`) or reuses a
+  tool name is left out for that user; the start goes on. Installed packages
+  keep refusing the start.
+- **Names.** The folder name is the package name. Installed packages come first, then global and
+  then personal extensions, each by folder name; a name belongs to the first package loaded with
+  it, and a later one is skipped before its code is imported. Users' keys (`id`, `subject`,
+  `operator`) and `paca` are refused.
+- **Host imports.** `/data` has no `node_modules` above it, so a `module.registerHooks` resolve
+  hook, acting only on imports from files under a loaded extension's folder, answers
+  `@paca/extension`, `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` (and their
+  subpaths) with the URLs Paca itself imports, also for `require`. So `OperationError` and Pi are
+  the host's own (`instanceof` holds); every other import resolves as usual, from the
+  extension's own `node_modules`. Paca never runs npm.
+- **Frontends per user.** Each user's file map is their own (`UserHost.frontends`), not one map by
+  package name, because two users' personal extensions may share a name, and so the URL
+  `/ext/<name>/`, with different code.
 
 ## Future extension storage (not built)
 

@@ -39,6 +39,7 @@ Everything Paca and Pi write lives in `/data`:
 | `/data/session.key` | the key that signs session cookies, created on first start |
 | `/data/pi/` | Pi's agent directory (`PI_CODING_AGENT_DIR`): `auth.json`, `models.json`, `settings.json` |
 | `/data/users/<id>/github-workflow.json`, `/data/models-store.json` | generated caches |
+| `/data/local-extensions/<name>/`, `/data/users/<id>/local-extensions/<name>/` | private extensions, for every user or for one ([Local extensions](local-extensions.md)) |
 
 Use a named volume. Docker creates it owned by `node` with mode 0700. If you bind-mount a host
 directory instead, it must be owned by uid 1000 (`chown 1000:1000 <dir> && chmod 700 <dir>`).
@@ -120,6 +121,10 @@ docker ps --filter name=paca          # STATUS shows (healthy) after about 30 se
 To pin your account, follow step 3 of [Configure](../README.md#configure). The refused sign-in
 appears in `docker logs paca`. Edit `/data/config.json` with the copy command above, then
 `docker restart paca`.
+
+Private extensions go into the volume without a new image; after a change, check them with
+`docker exec paca node packages/api/src/check-extensions.ts`, then `docker restart paca` and
+reload the page. See [Local extensions](local-extensions.md).
 
 ## Stop
 
@@ -234,6 +239,10 @@ throwaway certificate and data. It checks:
   shows it with one draft waiting;
 - a page proposal with no open session makes a new session holding its draft, a retry naming
   another session id finds the same draft, and the session is deleted without approving it;
+- the example of [Local extensions](local-extensions.md), copied into the volume with the
+  guide's command, passes the guide's check in the running container, and after a restart is
+  listed beside the GitHub frontend, serves its module and answers its operation, with its
+  `OperationError` still a 400;
 - `docker stop` exits 0 within the grace period, and the secrets never appear in the logs;
 - a new container on the same volume keeps the session key, the session and the draft;
 - with a users config and a fake Herdr socket mounted read-only, the operator's question in a new

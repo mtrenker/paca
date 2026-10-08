@@ -2,7 +2,8 @@
 // trusted server code, so the operator installs it with Paca and lists it; paths are refused.
 // A package's frontend (`browser`) is checked here once: a malformed manifest refuses the start,
 // and missing built files turn that frontend off. The page is then served only files listed at
-// start, never paths taken from a request. See docs/architecture.md#frontends.
+// start, never paths taken from a request. See docs/architecture.md#frontends. Private extensions
+// from the data folder go through the same checks (local-extensions.ts).
 import { lstatSync, readdirSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,8 @@ export interface LoadedPackage {
 	module: string;
 	package: ToolPackage;
 	settings: unknown;
+	/** From the data folder (local-extensions.ts): a failure skips it instead of refusing the start. */
+	local?: boolean;
 	/** The package's frontend, unless it has none, it is switched off or its files are missing. */
 	frontend?: Frontend;
 }
@@ -50,21 +53,29 @@ export async function loadPackages(
 	const loaded: LoadedPackage[] = [];
 	for (const [module, settings] of Object.entries(enabled)) {
 		if (module.startsWith(".") || module.startsWith("/") || module.includes(":")) throw new Error(`extensions: ${module} is a path; enable installed packages by name`);
-		const candidate = (await load(module)).default as Partial<ToolPackage> | undefined;
-		if (typeof candidate?.name !== "string" || !NAME.test(candidate.name) || typeof candidate.forUser !== "function") {
-			throw new Error(`extensions: ${module} has no default export from defineToolPackage()`);
-		}
-		if (candidate.name === "paca" || loaded.some((p) => p.package.name === candidate.name)) throw new Error(`extensions: ${module} reuses the name "${candidate.name}"`);
-		const pkg = candidate as ToolPackage;
-		const entry: LoadedPackage = { module, package: pkg, settings };
-		if (pkg.browser !== undefined) {
-			const manifest = checkManifest(module, pkg.browser, rootOf(module));
-			if (disableFrontends.includes(module)) log.log(`paca: extension ${module}: frontend disabled by config`);
-			else entry.frontend = frontendOf(module, pkg.name, manifest, log);
-		}
+		const entry = checkPackage(module, (await load(module)).default, settings, () => rootOf(module), { frontendOff: disableFrontends.includes(module), log });
+		if (entry.package.name === "paca" || loaded.some((p) => p.package.name === entry.package.name)) throw new Error(`extensions: ${module} reuses the name "${entry.package.name}"`);
 		loaded.push(entry);
 	}
 	return loaded;
+}
+
+/**
+ * A module's default export as a loaded package, with its frontend. Throws, naming `module`, when it
+ * is not from defineToolPackage() or its manifest is malformed. `root` is the package's directory.
+ */
+export function checkPackage(module: string, candidate: unknown, settings: unknown, root: () => string, { frontendOff = false, log, build = "run npm run build" }: { frontendOff?: boolean; log: Pick<Console, "log">; build?: string }): LoadedPackage {
+	const pkg = candidate as Partial<ToolPackage> | undefined;
+	if (typeof pkg?.name !== "string" || !NAME.test(pkg.name) || typeof pkg.forUser !== "function") {
+		throw new Error(`extensions: ${module} has no default export from defineToolPackage()`);
+	}
+	const entry: LoadedPackage = { module, package: pkg as ToolPackage, settings };
+	if (pkg.browser !== undefined) {
+		const manifest = checkManifest(module, pkg.browser, root());
+		if (frontendOff) log.log(`paca: extension ${module}: frontend disabled by config`);
+		else entry.frontend = frontendOf(module, pkg.name, manifest, log, build);
+	}
+	return entry;
 }
 
 /** A clean relative file path ending in `ext`: no leading slash, no dot segments, no backslashes. */
@@ -105,7 +116,7 @@ function checkManifest(module: string, manifest: BrowserManifest, root: string) 
 }
 
 /** The frontend with its file map, or undefined (logged once) when its built files are missing. */
-function frontendOf(module: string, name: string, manifest: ReturnType<typeof checkManifest>, log: Pick<Console, "log">): Frontend | undefined {
+function frontendOf(module: string, name: string, manifest: ReturnType<typeof checkManifest>, log: Pick<Console, "log">, build: string): Frontend | undefined {
 	const files = new Map<string, { path: string; type: string }>();
 	let bytes = 0;
 	const walk = (dir: string, prefix: string) => {
@@ -130,7 +141,7 @@ function frontendOf(module: string, name: string, manifest: ReturnType<typeof ch
 	walk(manifest.dir, "");
 	const missing = [manifest.entry, ...manifest.styles].find((f) => !files.has(f));
 	if (missing) {
-		log.log(`paca: extension ${module}: ${missing} missing; run npm run build. Cards show text.`);
+		log.log(`paca: extension ${module}: ${missing} missing; ${build}. Cards show text.`);
 		return undefined;
 	}
 	const url = (file: string) => `/ext/${name}/${file}`;
