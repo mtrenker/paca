@@ -13,7 +13,7 @@
     "start": "node packages/api/src/main.ts",
     "ask": "node packages/api/src/ask.ts",
     "test": "node --test \"packages/*/test/*.test.js\"",
-    "test:browser": "npm run build && npm run build:fixture && node --test --test-timeout=60000 test/browser/",
+    "test:browser": "npm run build && npm run build:fixture && node --test --test-timeout=60000 \"test/browser/*.test.mjs\"",
     "test:container": "node test/container/smoke.mjs",
     "preview": "node test/preview/start.mjs"
   },
