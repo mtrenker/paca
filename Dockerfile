@@ -51,11 +51,14 @@ COPY packages/extension-herdr/package.json packages/extension-herdr/
 COPY packages/web/package.json packages/web/
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
 
-# The page is the only compiled part: TypeScript to packages/web/dist/app.js. The server runs its
-# TypeScript sources directly; Node 24 strips the types.
+# The browser code is the only compiled part: the page's TypeScript to packages/web/dist/, and the
+# GitHub package's cards to packages/extension-github/browser/dist/. The server runs its TypeScript
+# sources directly; Node 24 strips the types.
 FROM deps AS web
 COPY tsconfig.base.json ./
 COPY packages/contracts/src packages/contracts/src
+COPY packages/extension/browser packages/extension/browser
+COPY packages/extension-github/browser packages/extension-github/browser
 COPY packages/web packages/web
 RUN npm ci --workspace @paca/web --include-workspace-root --ignore-scripts --no-audit --no-fund && npm run build
 
@@ -74,6 +77,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json LICENSE ./
 COPY packages ./packages
 COPY --from=web /app/packages/web/dist ./packages/web/dist
+COPY --from=web /app/packages/extension-github/browser/dist ./packages/extension-github/browser/dist
 
 # Everything Paca and Pi write lives in /data. GH_TOKEN, PACA_OIDC_CLIENT_SECRET and model
 # credentials are runtime environment, never build arguments.

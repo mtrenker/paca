@@ -218,6 +218,17 @@ async function main() {
 		assert.equal(info.model, "fake/fake-model");
 		step("OIDC through the fake provider: other subject refused (403), allowed subject signed in");
 
+		// The GitHub package's frontend was built into the image and is served to this user only.
+		assert.deepEqual(info.extensions, [{ name: "github", entry: "/ext/github/dist/index.js", styles: ["/ext/github/github.css"], cards: ["issue"] }]);
+		for (const [path, type] of [["/ext/github/dist/index.js", "text/javascript"], ["/ext/github/github.css", "text/css"]]) {
+			const asset = await fetch(`${first.base}${path}`, { headers: { cookie } });
+			assert.deepEqual([asset.status, asset.headers.get("content-type")], [200, type], path);
+			assert.equal(asset.headers.get("content-security-policy"), (await fetch(`${first.base}/healthz`)).headers.get("content-security-policy"));
+		}
+		assert.equal((await fetch(`${first.base}/ext/github/dist/index.js`)).status, 401);
+		assert.equal((await fetch(`${first.base}/ext/github/src/index.ts`, { headers: { cookie } })).status, 404);
+		step("GitHub card assets served after sign-in with the page's CSP (401 without a session, sources 404)");
+
 		const post = (path, body, origin = ORIGIN, csrf = info.csrf) =>
 			fetch(`${first.base}${path}`, { method: "POST", headers: { cookie, origin, "x-csrf-token": csrf, "content-type": "application/json" }, body: JSON.stringify(body) });
 		const start = { id: session, text: "Smoke question", requestId: `smoke-${run}` };

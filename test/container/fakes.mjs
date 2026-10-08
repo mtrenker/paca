@@ -27,16 +27,18 @@ export const FAKE_PROMPT = "Summarise in three lines where you are and what is l
 
 /**
  * A question that mentions an agent, from a user with Herdr scope: list the agents, then propose
- * FAKE_PROMPT for the first one listed, then answer. Any other question: draft an issue in the
- * first repository of the user's GitHub scope, as the system prompt states it, then answer. Answers
- * stream word by word.
+ * FAKE_PROMPT for the first one listed, then answer. A question naming an issue as owner/name#12:
+ * read it, then answer slowly, so the preview shows the issue card while the answer streams. Any
+ * other question: draft an issue in the first repository of the user's GitHub scope, as the system
+ * prompt states it, then answer. Answers stream word by word over the model delay, or `spread`
+ * times it.
  */
 function completion(request) {
 	const turn = request.messages.slice(request.messages.findLastIndex((m) => m.role === "user"));
 	const tools = turn.filter((m) => m.role === "tool").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
 	const chunk = (delta, finish = null) => ({ id: "smoke", object: "chat.completion.chunk", created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }] });
-	const say = (answer) => [chunk({ role: "assistant", content: "" }), ...answer.split(/(?<= )/).map((word) => chunk({ content: word })), chunk({}, "stop")];
-	const use = (name, args) => [chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }), chunk({}, "tool_calls")];
+	const say = (answer, spread = 1) => ({ spread, chunks: [chunk({ role: "assistant", content: "" }), ...answer.split(/(?<= )/).map((word) => chunk({ content: word })), chunk({}, "stop")] });
+	const use = (name, args) => ({ spread: 1, chunks: [chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }), chunk({}, "tool_calls")] });
 	const system = request.messages.filter((m) => m.role === "system" || m.role === "developer").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
 	const content = turn[0]?.content;
 	const asked = typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
@@ -45,6 +47,14 @@ function completion(request) {
 		const pane = tools.length === 1 && /^- .* in ([\w-]+:p\d+):/m.exec(tools[0])?.[1];
 		if (pane) return use("propose_prompt", { pane, prompt: FAKE_PROMPT });
 		return say(pane === undefined ? "Smoke answer: no agents in scope." : "Smoke answer: proposed a prompt for the first agent.");
+	}
+	const issue = /\b([\w.-]+\/[\w.-]+)#(\d+)\b/.exec(asked);
+	if (issue) {
+		if (tools.length === 0) return use("read_issue", { repository: issue[1], number: Number(issue[2]) });
+		const read = /^\S+#\d+ \[\w+\]/.test(tools[0]);
+		if (!read) return say(`Smoke answer: ${issue[0]} could not be read.`);
+		const sentences = [`Smoke answer about ${issue[0]}, streamed slowly so you can tab into its card above while it arrives.`, "The card shows the issue as Paca read it, with when it was read.", "It stays where it is while this text grows, and a focused link in it keeps its focus.", "Nothing here came from GitHub: the preview's gh made the issue up."];
+		return say(sentences.join("\n\n"), 4);
 	}
 	const repository = /^- ([\w.-]+\/[\w.-]+) \(Project /m.exec(system)?.[1];
 	if (tools.length || !repository) return say(repository ? `Smoke answer: drafted one issue in ${repository}.` : "Smoke answer: no GitHub scope.");
@@ -101,9 +111,9 @@ export function startFakes({ issuer, port, tls, host, login, modelDelayMs = 0, l
 		}
 		if (route === "POST /v1/chat/completions") {
 			res.writeHead(200, { "Content-Type": "text/event-stream" });
-			const chunks = completion(JSON.parse(await readBody(req)));
+			const { chunks, spread } = completion(JSON.parse(await readBody(req)));
 			for (const chunk of chunks) {
-				if (modelDelayMs) await new Promise((resolve) => setTimeout(resolve, modelDelayMs / chunks.length));
+				if (modelDelayMs) await new Promise((resolve) => setTimeout(resolve, (modelDelayMs * spread) / chunks.length));
 				if (res.destroyed) return; // Stop aborted the request
 				res.write(`data: ${JSON.stringify(chunk)}\n\n`);
 			}

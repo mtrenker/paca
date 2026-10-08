@@ -1,12 +1,31 @@
 #!/usr/bin/env node
 // Fake gh for the local preview: creating an issue answers with a made-up issue, and nothing reaches
 // GitHub. A draft whose body mentions "unknown" fails like a lost response (HTTP 502), so Paca
-// records an unknown outcome. Reads are not faked; they fail, and Paca shows them as unavailable.
+// records an unknown outcome. Reading one issue answers with a synthetic issue of that number in
+// that repository (every third one closed); other reads are not faked, they fail, and Paca shows
+// them as unavailable.
 import { readFileSync } from "node:fs";
 
 const [command, ...rest] = process.argv.slice(2);
 const target = rest.find((a) => /^repos\/[\w.-]+\/[\w.-]+\/issues$/.test(a));
-if (command === "api" && rest.includes("POST") && target) {
+if (command === "issue" && rest[0] === "view" && /^\d+$/.test(rest[1]) && rest[2] === "--repo") {
+	const [number, repository] = [Number(rest[1]), rest[3]];
+	const at = (days) => new Date(Date.now() - days * 86_400_000).toISOString();
+	console.log(JSON.stringify({
+		number,
+		title: `Synthetic issue ${number}: tidy the preview notes`,
+		state: number % 3 === 0 ? "CLOSED" : "OPEN",
+		url: `https://github.com/${repository}/issues/${number}`,
+		author: { login: "preview-bot" },
+		labels: [{ name: "preview" }, { name: "synthetic" }, ...(number % 2 ? [{ name: "bug" }] : [])],
+		assignees: [],
+		milestone: null,
+		createdAt: at(9),
+		updatedAt: at(2),
+		body: `Made up by the preview's fake gh. Nothing here came from GitHub.`,
+		comments: [{ author: { login: "preview-bot" }, createdAt: at(2), body: "A synthetic comment." }],
+	}));
+} else if (command === "api" && rest.includes("POST") && target) {
 	const { title, body } = JSON.parse(readFileSync(0, "utf8"));
 	if (/unknown/i.test(body)) {
 		console.error("fake gh: gh: Bad Gateway (HTTP 502)");

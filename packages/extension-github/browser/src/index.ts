@@ -28,13 +28,10 @@ function issueData(data: unknown): IssueData {
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-/** When Paca read the issue, as the session list words times. */
+/** When Paca read the issue. A clock time, not "5 min ago": a card is rendered once and stays. */
 function readAt(iso: string) {
 	const at = new Date(iso);
 	if (Number.isNaN(at.getTime())) return "Read earlier";
-	const minutes = (Date.now() - at.getTime()) / 60_000;
-	if (minutes < 1) return "Read just now";
-	if (minutes < 60) return `Read ${Math.round(minutes)} min ago`;
 	return `Read ${at.toDateString() === new Date().toDateString() ? timeFormat.format(at) : dayFormat.format(at)}`;
 }
 

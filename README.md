@@ -20,6 +20,9 @@ process, and depends on the Pi SDK (pi-coding-agent 1.0.3), which changes often.
   as unavailable.
 - Issue drafts for a configured repository: repository, title and body. **Create issue** creates
   exactly the text on the card; **Dismiss** creates nothing.
+- Issue cards: when Paca reads an issue, the answer shows a card with its reference, state,
+  title, labels and the time Paca read it, linking to the issue on GitHub. The card shows the
+  issue as it was read and stays put while the answer streams.
 - Several saved sessions per user. **New session** starts one with its first question; the list
   shows each session with **Answering** while it answers and the number of drafts waiting.
   Sessions answer at the same time, each with its own Stop and limits, and persist across
@@ -58,12 +61,18 @@ priority ([#6](https://github.com/mtrenker/paca/issues/6)).
   and no shell, file or generic API access:
   - `portfolio_overview` reads the configured Projects through pi-clean's `github-planning.mjs`
     `snapshot` and `groom`;
-  - `read_issue` reads one issue with its comments;
+  - `read_issue` reads one issue with its comments and shows its card;
   - `search_issues` searches issues;
   - `draft_issue` stores a draft for you to decide on. It cannot create anything.
 
   Each tool refuses repositories outside the user's configured Projects and runs `gh` or Node
   with fixed arguments, without a shell, as that user.
+- **Cards:** a tool package can ship browser code that renders cards in the chat. A tool stores
+  a small projection of what it read (at most 1 KiB) with the session in `paca.db`; the page
+  imports the package's prebuilt module from Paca itself, under the same Content-Security-Policy,
+  and mounts each card once. Only users with that package's tools get its files. When a frontend
+  is off or fails, cards show plain text with a link. See
+  [Architecture](docs/architecture.md#frontends).
 - **Creating an issue:** **Create issue** sends only the draft's id. The server creates the stored
   draft of the signed-in user with one `gh api --method POST repos/<owner>/<repo>/issues`, with
   that user's GitHub credential. It claims the draft with one conditional update in `paca.db`
@@ -171,6 +180,9 @@ npm test
    - `extensions` lists the tool packages Paca loads, by npm package name, with their settings.
      Only packages installed with Paca can be listed; they run as trusted server code. Remove an
      entry to turn its tools off for everyone.
+   - `"disableFrontends": ["@paca/extension-github"]` (optional, top level) turns off the browser
+     code of listed packages: their cards show plain text, and their tools keep working. Each
+     entry must be a package under `extensions`.
    - Each `users` entry is one person: an `id` (lowercase letters, digits and dashes, used in
      data paths), their OIDC `subject`, and their settings for each tool package under the
      package's name. `operator: true` marks you: the operator owns the conversation from before

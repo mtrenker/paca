@@ -2,7 +2,9 @@
 // Starts the fake OIDC provider and model (test/container/fakes.mjs) and Paca in the foreground,
 // with data in .data/preview/, a fake gh, so approving a draft never reaches GitHub, and a fake
 // Herdr (test/container/fake-herdr.mjs) for the operator, so a sent prompt reaches no terminal.
-// Ctrl-C stops everything; the data stays for the next start. See CONTRIBUTING.md.
+// Ctrl-C stops everything; the data stays for the next start. PACA_PREVIEW_FRONTENDS=off turns the
+// GitHub package's frontend off (`disableFrontends`), with its own data in .data/preview-frontends-off/,
+// to show cards as fallback text. See CONTRIBUTING.md.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -15,7 +17,8 @@ const root = resolve(import.meta.dirname, "..", "..");
 const port = Number(process.env.PACA_PORT ?? 4402);
 const fakesPort = port + 1;
 const loginPort = port + 2;
-const dataDir = join(root, ".data", "preview");
+const frontendsOff = process.env.PACA_PREVIEW_FRONTENDS === "off";
+const dataDir = join(root, ".data", frontendsOff ? "preview-frontends-off" : "preview");
 const tlsDir = join(dataDir, "tls");
 // Unix socket paths are limited to about 100 bytes, too short for a path inside the checkout.
 const herdrDir = mkdtempSync(join(tmpdir(), "paca-preview-herdr-"));
@@ -45,6 +48,7 @@ const config = {
 	oidc: { issuer, clientId: "paca-smoke" },
 	model: "fake/fake-model",
 	extensions: { "@paca/extension-github": { piClean: "/nonexistent/pi-clean" }, "@paca/extension-herdr": { socket: join(herdrDir, "herdr.sock") } },
+	...(frontendsOff ? { disableFrontends: ["@paca/extension-github"] } : {}),
 	users: USERS.map((u) => ({
 		id: u.id,
 		subject: u.sub,
@@ -84,6 +88,8 @@ const paca = spawn(process.execPath, [join(root, "packages", "api", "src", "main
 });
 console.log(`preview: open http://localhost:${port}/ and sign in as ${USERS.map((u) => u.id).join(" or ")}`);
 console.log("preview: martin also has a fake Herdr; ask him something about an agent to see a prompt card");
+console.log(`preview: name an issue to see its card while the answer streams: ${USERS.map((u) => `${u.repository}#12 as ${u.id}`).join(", ")}`);
+if (frontendsOff) console.log("preview: the GitHub frontend is off here, so issue cards show their fallback text");
 console.log(`preview: the fake sign-in page on https://localhost:${loginPort} uses a throwaway certificate; accept the browser's warning once`);
 const stop = () => paca.kill("SIGTERM");
 process.on("SIGINT", stop);

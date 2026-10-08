@@ -37,10 +37,13 @@ syntax: no enums, namespaces or constructor parameter properties. Only the page 
 `npm run preview` runs Paca with two synthetic users, `martin` and `alex`, and no real
 credentials: a fake OIDC provider and a fake model (from `test/container/fakes.mjs`), and a fake
 `gh` that answers issue creation with a made-up issue, so **Create issue** never reaches GitHub.
-Reads are not faked and show as unavailable. The fake model drafts one issue in the user's own
-repository for every question. `martin` is the operator and also has a fake Herdr with two agents
-in scope and one outside it: a question that mentions an agent lists them and proposes a prompt,
-and **Send prompt** only records it in the fake (the preview's terminal says so).
+It also answers reading one issue with a synthetic issue; other reads are not faked and show as
+unavailable. The fake model drafts one issue in the user's own repository for every question,
+unless the question names an issue such as `preview-martin/notes#12`: then it reads that issue,
+which shows the issue card, and streams its answer slowly, so you can tab into the card while the
+text grows. `martin` is the operator and also has a fake Herdr with two agents in scope and one
+outside it: a question that mentions an agent lists them and proposes a prompt, and
+**Send prompt** only records it in the fake (the preview's terminal says so).
 
 ```sh
 ss -ltn | grep -E ':440[2-4] ' || echo "4402-4404 are free"
@@ -52,6 +55,13 @@ each checkout its own base port. Data lives in the checkout's `.data/preview/` a
 restarts; delete that directory to start over. Open `http://localhost:<port>/` and pick a user on
 the fake sign-in page. That page uses a throwaway certificate, so the browser warns once. Use a
 private window for the second user. Stop everything with Ctrl-C.
+
+To see cards as fallback text, start a second preview with the GitHub frontend switched off
+(`disableFrontends`). It keeps its data in `.data/preview-frontends-off/`:
+
+```sh
+PACA_PORT=4412 PACA_PREVIEW_FRONTENDS=off npm run preview
+```
 
 ## Keep private data out
 
