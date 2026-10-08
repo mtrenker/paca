@@ -1,7 +1,9 @@
 // The Paca page: the user's saved sessions, the open session's transcript, and questions.
 // The open session is ?session=<id> in the URL; without one, the next question starts a new session.
 // Model text becomes DOM nodes through a small Markdown subset; nothing is parsed as HTML.
-import type { DraftCard, PageState, SessionInfo, SessionSummary, Turn } from "@paca/contracts";
+// Turns are kept by id across updates, so extension cards stay mounted while an answer streams.
+import type { CardRef, DraftCard, PageState, SessionInfo, SessionSummary, Turn } from "@paca/contracts";
+import { createMounts } from "./mounts.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const EMPTY: PageState = { running: false, turns: [] };
@@ -93,14 +95,19 @@ function leave(message: string) {
 	$("new-session").focus();
 }
 
+/** A turn on the page. `cards` holds its card containers and is never detached while shown. */
+interface TurnView {
+	section: HTMLElement;
+	cards: HTMLElement;
+}
+const turnViews = new Map<string, TurnView>();
+
 function render() {
-	const main = $("transcript");
 	const nearBottom = innerHeight + scrollY >= document.body.scrollHeight - 120;
-	for (const node of [...main.querySelectorAll(".turn")]) node.remove();
 	$("session-head").hidden = !current;
 	$("session-title").textContent = titleOf(current);
 	$("empty").hidden = Boolean(current);
-	if (current) for (const turn of state.turns) main.append(renderTurn(turn, turn === state.turns.at(-1)));
+	renderTurns(current ? state.turns : []);
 	$("send").hidden = state.running;
 	$("stop").hidden = !state.running;
 	const deletable = !state.running && !drafts().some((d) => d.status === "creating");
@@ -167,9 +174,51 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 	return node;
 }
 
-function renderTurn(turn: Turn, isLast: boolean) {
-	const section = el("section", "turn");
-	if (turn.question) section.append(el("p", "question", turn.question));
+/**
+ * Updates the transcript in place: a turn keeps its section, and a card keeps its container, so a
+ * mounted card is never detached (that would blur a focused element inside it). Nodes move only
+ * when their order changed. Cards that left the state are disposed once.
+ */
+function renderTurns(turns: Turn[]) {
+	const shown = new Set<string>();
+	const cardIds = new Set<string>();
+	let previous: Element = $("empty");
+	for (const turn of turns) {
+		shown.add(turn.id);
+		let view = turnViews.get(turn.id);
+		if (!view) {
+			view = { section: el("section", "turn"), cards: el("div", "turn-cards") };
+			view.section.append(view.cards);
+			turnViews.set(turn.id, view);
+		}
+		if (previous.nextElementSibling !== view.section) previous.after(view.section);
+		previous = view.section;
+		renderTurn(view, turn, turn === turns.at(-1));
+		let before: Element | null = null;
+		for (const card of turn.cards ?? []) {
+			cardIds.add(card.id);
+			const container = cards.container(card);
+			if ((before ? before.nextElementSibling : view.cards.firstElementChild) !== container) {
+				if (before) before.after(container);
+				else view.cards.prepend(container);
+			}
+			before = container;
+		}
+	}
+	cards.retain(cardIds);
+	for (const [id, view] of turnViews) {
+		if (shown.has(id)) continue;
+		view.section.remove();
+		turnViews.delete(id);
+	}
+}
+
+/** Everything of a turn but its cards, rebuilt on each update: before the cards, then after them. */
+function renderTurn({ section, cards: cardsEl }: TurnView, turn: Turn, isLast: boolean) {
+	for (const child of [...section.children]) if (child !== cardsEl) child.remove();
+	const before: Node[] = [];
+	const after: Node[] = [];
+	if (turn.question) before.push(el("p", "question", turn.question));
 	if (turn.steps.length) {
 		const trail = el("ul", "trail");
 		trail.setAttribute("aria-label", "Evidence read for this answer");
@@ -181,20 +230,56 @@ function renderTurn(turn: Turn, isLast: boolean) {
 			if (step.detail) li.append(el("span", "detail", step.detail));
 			trail.append(li);
 		}
-		section.append(trail);
+		before.push(trail);
 	}
 	const text = turn.answer || turn.draft;
 	if (text) {
 		const answer = renderMarkdown(text);
 		if (!turn.answer) answer.classList.add("draft");
-		section.append(answer);
+		after.push(answer);
 	} else if (isLast && state.running) {
-		section.append(el("p", "working", turn.steps.length ? "Thinking about what was read…" : "Starting…"));
+		after.push(el("p", "working", turn.steps.length ? "Thinking about what was read…" : "Starting…"));
 	}
-	for (const draft of turn.drafts ?? []) section.append(renderDraft(draft));
-	if (turn.retry && isLast && state.running) section.append(el("p", "notice", turn.retry));
-	for (const notice of turn.notices) section.append(el("p", `notice ${notice.tone === "error" ? "error" : ""}`, notice.text));
-	return section;
+	for (const draft of turn.drafts ?? []) after.push(renderDraft(draft));
+	if (turn.retry && isLast && state.running) after.push(el("p", "notice", turn.retry));
+	for (const notice of turn.notices) after.push(el("p", `notice ${notice.tone === "error" ? "error" : ""}`, notice.text));
+	cardsEl.before(...before);
+	cardsEl.after(...after);
+}
+
+// Extension cards. A package's module and styles load the first time one of its cards is shown.
+// A card of a package this page does not list, or whose module or mount fails, shows its fallback.
+const EXT_NAME = /^[a-z][a-z0-9-]*$/;
+const cards = createMounts<HTMLElement>({
+	available: (card) => Boolean(info.extensions?.some((e) => e.name === card.package && e.cards.includes(card.kind))),
+	load(pkg) {
+		const ext = info.extensions.find((e) => e.name === pkg)!;
+		for (const href of ext.styles) {
+			const sheet = el("link");
+			sheet.rel = "stylesheet";
+			sheet.href = href;
+			document.head.append(sheet);
+		}
+		return import(ext.entry).then((module) => module.default);
+	},
+	create(card) {
+		const container = el("div", EXT_NAME.test(card.package) ? `ext ext-${card.package}` : "ext");
+		container.dataset.cardId = card.id;
+		return container;
+	},
+	fallback: renderCardFallback,
+	remove: (container) => container.remove(),
+	context: (card) => Object.freeze({ package: card.package, session: current }),
+	warn: (message) => console.warn(message),
+});
+
+/** What a card says without its package: its fallback text, linked when the link is GitHub's. */
+function renderCardFallback(container: HTMLElement, card: CardRef, failed: boolean) {
+	container.className = "card-fallback";
+	const text = el("p");
+	if (failed) text.append(el("span", "card-unavailable", "Card unavailable: "));
+	text.append(card.fallback.url ? link(card.fallback.url, card.fallback.text) : card.fallback.text);
+	container.replaceChildren(text);
 }
 
 // How a card speaks about its write. A draft without a known action is a GitHub issue draft.

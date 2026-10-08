@@ -1,3 +1,4 @@
 node_modules/
 .data/
 packages/web/dist/
+packages/extension-github/browser/dist/

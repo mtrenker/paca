@@ -8,6 +8,20 @@ export interface SessionInfo {
 	/** Short scope for the header, such as "2 Projects"; `scopeDetail` is its tooltip. */
 	scope: string;
 	scopeDetail: string;
+	/** The tool packages whose frontend the page may load for this user. */
+	extensions: ExtensionInfo[];
+}
+
+/** A package's frontend, as the page loads it. URLs are same-origin paths under /ext/<name>/. */
+export interface ExtensionInfo {
+	/** The package's name, such as "github". */
+	name: string;
+	/** The ES module to import. */
+	entry: string;
+	/** Stylesheets to link with it. */
+	styles: string[];
+	/** The card kinds it renders. */
+	cards: string[];
 }
 
 export type StepStatus = "running" | "done" | "unavailable" | "interrupted";
@@ -39,6 +53,20 @@ export interface DraftCard {
 	checkUrl?: string;
 }
 
+/**
+ * A card a tool showed: a bounded projection the package renders, labeled with when Paca read it.
+ * The page shows `fallback` when the package's frontend is not available.
+ */
+export interface CardRef {
+	/** "<tool call id>:<n>", unique within the session and never reused. */
+	id: string;
+	package: string;
+	kind: string;
+	data: Record<string, unknown>;
+	fallback: { text: string; url?: string };
+	createdAt: string;
+}
+
 export interface Notice {
 	tone: "warning" | "error";
 	text: string;
@@ -51,6 +79,8 @@ export interface Turn {
 	answer: string;
 	notices: Notice[];
 	drafts: DraftCard[];
+	/** Cards of this turn's tool calls, in the order they were shown. */
+	cards: CardRef[];
 	/** The answer being written, while the run is going. */
 	draft?: string;
 	retry?: string;

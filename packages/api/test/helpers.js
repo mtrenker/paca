@@ -52,7 +52,7 @@ export function stubGitHub(outcome = async () => ({ number: 12, url: "https://gi
 	const gh = {
 		projects: [{ owner: "o", number: 1, repository: "o/r" }],
 		overview: async () => "Captured 2026-10-06T00:00:00Z from 1 of 1 configured Projects; 1 open items (closed items omitted).",
-		readIssue: async () => "o/r#1",
+		issue: async (repository, number) => ({ repository, issue: { number, title: `Issue ${number}`, state: "OPEN", url: `https://github.com/o/r/issues/${number}`, labels: [{ name: "bug" }], updatedAt: "2026-10-07T00:00:00Z", comments: [] } }),
 		searchIssues: async () => "none",
 		checkRepository: (r) => {
 			if (r !== "o/r") throw new Error(`Repository ${r} is outside Paca's scope.`);

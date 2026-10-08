@@ -9,8 +9,9 @@ import { join, relative } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { type AgentSession, type ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { DraftStatus, PageState, SessionSummary } from "@paca/contracts";
-import type { Proposal, Propose, UserTools, WriteAction, WriteOutcome } from "@paca/extension";
+import type { Proposal, Propose, Show, UserTools, WriteAction, WriteOutcome } from "@paca/extension";
 import { interrupted, LIMITS, type Limits, NOTICE, openAgent, type PackageTools, type Run } from "./agent.ts";
+import { CARDS_PER_CALL, checkCard } from "./cards.ts";
 import { createFeed, type Feed } from "./feed.ts";
 import type { Store, StoredDraft } from "./store.ts";
 import { type Describe, uiState } from "./view.ts";
@@ -25,8 +26,11 @@ export interface SessionsOptions {
 	store: Store;
 	modelRuntime: ModelRuntime;
 	model: Model<any>;
-	/** The user's package tools, given the `propose` that stores a package's drafts in this store. */
-	tools: (proposeFor: (packageName: string) => Propose) => PackageTools[];
+	/**
+	 * The user's package tools, given the `propose` that stores a package's drafts in this store and
+	 * the `show` that stores its cards of the kinds its manifest declares.
+	 */
+	tools: (proposeFor: (packageName: string) => Propose, showFor: (packageName: string, kinds: readonly string[]) => Show) => PackageTools[];
 	limits?: Limits;
 	/** Removes one file; a missing file counts as removed. Tests hold or fail it. */
 	removeFile?: (path: string) => Promise<void>;
@@ -66,7 +70,14 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 		store.propose({ id: toolCallId, sessionId, action: `${packageName}.${proposal.action}`, repository: proposal.target, title: proposal.title, body: proposal.body, ...(proposal.expect ? { expect: { ...proposal.expect } } : {}) });
 		changed(sessionId);
 	};
-	const packages = toolsOf(proposeFor);
+	// Cards likewise; one outside the bounds throws, and the tool call fails (cards.ts).
+	const showFor = (packageName: string, kinds: readonly string[]): Show => (toolCallId, ctx, card) => {
+		const checked = checkCard(card, kinds);
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (!store.addCard({ sessionId, toolCallId, package: packageName, ...checked }, CARDS_PER_CALL)) throw new Error(`card refused: a tool call shows at most ${CARDS_PER_CALL} cards`);
+		changed(sessionId);
+	};
+	const packages = toolsOf(proposeFor, showFor);
 	const writes = new Map<string, WriteAction>();
 	for (const p of packages) for (const [name, action] of Object.entries(p.tools.writes ?? {})) writes.set(`${p.name}.${name}`, action);
 	const proposalOf = (d: StoredDraft): Proposal => ({ action: d.action, target: d.repository, title: d.title, body: d.body, ...(d.expect ? { expect: d.expect } : {}) });
@@ -84,7 +95,7 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 			const created: Live = {
 				busy: false,
 				feed: createFeed(() =>
-					uiState(created.session?.sessionManager.getBranch() ?? [], { running: created.busy, partial: created.session?.state.streamingMessage, retry: created.retry, error: created.error, drafts: store.drafts(id), describe }),
+					uiState(created.session?.sessionManager.getBranch() ?? [], { running: created.busy, partial: created.session?.state.streamingMessage, retry: created.retry, error: created.error, drafts: store.drafts(id), cards: store.cards(id), describe }),
 				),
 			};
 			live = created;

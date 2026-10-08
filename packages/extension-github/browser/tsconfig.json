@@ -1,0 +1,13 @@
+{
+  // The GitHub package's browser entry: compiled into dist/, which the API serves under /ext/github/.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "types": [],
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}

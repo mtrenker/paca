@@ -21,7 +21,8 @@ const piDir = join(userDir, "pi");
 await mkdir(piDir, { recursive: true, mode: 0o700 });
 const { models, model, label } = await openModels(DATA_DIR, config.model);
 const proposals: Proposal[] = [];
-const packages = toolsFor(operator, await loadPackages(config.extensions), userDir, () => (_toolCallId, _ctx, proposal) => void proposals.push(proposal));
+// Cards are for the page; here they are dropped.
+const packages = toolsFor(operator, await loadPackages(config.extensions, undefined, { log: { log: () => {} } }), userDir, () => (_toolCallId, _ctx, proposal) => void proposals.push(proposal), () => () => {});
 console.error(`model ${label}; tools ${packages.map((p) => `${p.name} (${p.tools.scope.label})`).join(", ") || "none"}`);
 
 let session: AgentSession | undefined;

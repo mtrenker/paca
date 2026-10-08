@@ -114,12 +114,18 @@ export function createGitHub({ projects, piClean, dataDir, token, run = runFile,
 		return text;
 	}
 
-	async function readIssue(repository: string, number: number) {
+	/** One issue as gh reads it, in a repository of the scope (`repository` is the configured spelling). */
+	async function issue(repository: string, number: number): Promise<{ repository: string; issue: Loose }> {
 		const repo = checkRepository(repository);
 		if (!Number.isInteger(number) || number < 1) throw new Error("number must be a positive integer");
 		const fields = "number,title,state,url,author,labels,assignees,milestone,createdAt,updatedAt,body,comments";
 		const out = await run("gh", ["issue", "view", String(number), "--repo", repo, "--json", fields], { env, timeout: READ_TIMEOUT_MS });
-		return formatIssue(repo, JSON.parse(out));
+		return { repository: repo, issue: JSON.parse(out) };
+	}
+
+	async function readIssue(repository: string, number: number) {
+		const read = await issue(repository, number);
+		return formatIssue(read.repository, read.issue);
 	}
 
 	async function searchIssues(query: string, repository?: string) {
@@ -160,7 +166,7 @@ export function createGitHub({ projects, piClean, dataDir, token, run = runFile,
 		}
 	}
 
-	return { repositories, projects, checkRepository, overview, readIssue, searchIssues, createIssue };
+	return { repositories, projects, checkRepository, overview, issue, readIssue, searchIssues, createIssue };
 }
 
 export function planningConfigFor(projects: Project[]) {

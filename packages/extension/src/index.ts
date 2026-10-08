@@ -54,6 +54,45 @@ export interface WriteAction {
  */
 export type Propose = (toolCallId: string, ctx: ExtensionContext, proposal: Proposal) => void;
 
+/** A value that survives JSON: what a card may carry to the page. */
+export type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+
+/**
+ * A card in the chat turn of the calling tool: a small, browser-safe projection of what the tool
+ * read, which the package's browser entry renders. It is not a proposal and decides nothing. The
+ * page shows `fallback` when the package's frontend is not available.
+ */
+export interface CardInput {
+	/** A kind the package's manifest declares under `browser.cards`. */
+	readonly kind: string;
+	/** At most 1 KiB as UTF-8 JSON. Shape it to fit before calling `show`. */
+	readonly data: Readonly<Record<string, JsonValue>>;
+	/** 1 to 200 characters of text, and an optional https: link. */
+	readonly fallback: { readonly text: string; readonly url?: string };
+}
+
+/**
+ * Stores a card for the page under the session and tool call that made it, at most 8 per tool
+ * call. Pass the `toolCallId` and `ctx` your tool's `execute` received. Throws, failing the tool
+ * call, for a card outside the bounds above.
+ */
+export type Show = (toolCallId: string, ctx: ExtensionContext, card: CardInput) => void;
+
+/**
+ * What a package ships for the page: prebuilt ES modules and stylesheets in one directory of the
+ * package. Declared here, never taken from a tool's output. See docs/architecture.md#frontends.
+ */
+export interface BrowserManifest {
+	/** File URL of a directory inside the package, such as new URL("../browser/", import.meta.url).href. */
+	readonly dir: string;
+	/** The module the page imports, relative to `dir`, such as "dist/index.js". */
+	readonly entry: string;
+	/** Stylesheets the page links with the module, relative to `dir`. */
+	readonly styles?: readonly string[];
+	/** Card kinds the entry renders, such as ["issue"]. */
+	readonly cards?: readonly string[];
+}
+
 /** How the page names a call of one tool in the evidence trail. */
 export interface ToolLabel {
 	label(args: Record<string, unknown>): string;
@@ -82,11 +121,14 @@ export interface ForUserInput<Settings = unknown, UserSettings = unknown> {
 	/** Private directory for files the package can regenerate. Not for data it must keep. */
 	readonly cacheDir: string;
 	readonly propose: Propose;
+	readonly show: Show;
 }
 
 export interface ToolPackage<Settings = unknown, UserSettings = unknown> {
 	/** Names the package: its key in user settings and the prefix of its actions. */
 	readonly name: string;
+	/** The package's frontend, when it has one. */
+	readonly browser?: BrowserManifest;
 	/** The user's tools, or undefined when this user has none. Throw for invalid settings. */
 	forUser(input: ForUserInput<Settings, UserSettings>): UserTools | undefined;
 }

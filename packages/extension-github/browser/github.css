@@ -1,0 +1,12 @@
+/* The GitHub package's cards. Scoped under .ext-github; colors come from the page's custom properties. */
+.ext-github .issue-card { padding: 0.625rem 0.875rem; border: 1px solid var(--line); border-radius: 0.5rem; background: var(--surface); font-size: 0.9375rem; }
+.ext-github .issue-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.625rem; margin: 0 0 0.25rem; font-size: 0.8125rem; color: var(--muted); }
+.ext-github .issue-state { padding: 0 0.5rem; border-radius: 0.25rem; background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+.ext-github .closed .issue-state { background: var(--line); color: var(--muted); }
+.ext-github .issue-ref { font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
+.ext-github .issue-read { margin-left: auto; }
+.ext-github .issue-title { margin: 0; font-size: 1rem; line-height: 1.35; overflow-wrap: anywhere; }
+.ext-github .issue-title a { color: var(--ink); text-decoration-color: var(--line); }
+.ext-github .issue-title a:hover { color: var(--accent); }
+.ext-github .issue-labels { display: flex; flex-wrap: wrap; gap: 0.25rem 0.375rem; list-style: none; margin: 0.5rem 0 0; padding: 0; font-size: 0.75rem; }
+.ext-github .issue-labels li { padding: 0 0.5rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); overflow-wrap: anywhere; }

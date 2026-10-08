@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { childEnv, createGitHub, EvidenceUnavailable, formatOverview, WriteRejected, WriteUnknown } from "../src/github.ts";
-import github_ from "../src/index.ts";
+import github_, { githubTools, issueCard } from "../src/index.ts";
 
 const projects = [
 	{ owner: "o", number: 1, repository: "o/api" },
@@ -94,9 +94,61 @@ describe("GitHub reads", () => {
 	});
 });
 
+describe("issue card", () => {
+	const issueJson = (extra = {}) => ({ number: 12, title: "Fix the thing", state: "OPEN", url: "https://github.com/o/api/issues/12", author: { login: "a" }, labels: [{ name: "bug" }, { name: "P1" }], updatedAt: "2026-10-07T10:00:00Z", body: "Body", comments: [], ...extra });
+
+	it("shows the issue read_issue read, once, and gives the model the same text as before", async () => {
+		const { gh, calls } = await github(() => JSON.stringify(issueJson()));
+		const shown = [];
+		const ctx = { sessionManager: { getSessionId: () => "s1" } };
+		const readIssue = githubTools(gh, () => {}, (id, c, card) => shown.push([id, c, card])).tools.find((t) => t.name === "read_issue");
+		const result = await readIssue.execute("call_1", { repository: "O/API", number: 12 }, undefined, undefined, ctx);
+		assert.equal(result.content[0].text, await gh.readIssue("o/api", 12));
+		assert.equal(calls.length, 2, "one gh call per read");
+		assert.equal(shown.length, 1);
+		const [[id, context, card]] = shown;
+		assert.deepEqual([id, context], ["call_1", ctx]);
+		assert.deepEqual(card, {
+			kind: "issue",
+			data: { repository: "o/api", number: 12, title: "Fix the thing", state: "open", labels: ["bug", "P1"], updatedAt: "2026-10-07T10:00:00Z" },
+			fallback: { text: "o/api#12 · Fix the thing · open", url: "https://github.com/o/api/issues/12" },
+		});
+	});
+
+	it("fits a 256-character multibyte title with many long labels into 1 KiB", () => {
+		const labels = Array.from({ length: 20 }, (_, i) => ({ name: `${"ラベル".repeat(20)}${i}` }));
+		for (const title of ["😀".repeat(128), "ä".repeat(256), "\u0001".repeat(256), "t".repeat(256)]) {
+			const card = issueCard("o/api", issueJson({ title, labels, state: "CLOSED" }));
+			assert.ok(Buffer.byteLength(JSON.stringify(card.data)) <= 1024, title.slice(0, 4));
+			assert.ok(card.data.title.length <= 120);
+			assert.ok(card.data.labels.length <= 5 && card.data.labels.every((l) => l.length <= 30));
+			assert.equal(card.data.state, "closed");
+			assert.ok(card.fallback.text.length <= 200);
+			assert.doesNotMatch(card.data.title, /[\uD800-\uDBFF]$/, "no half surrogate pair");
+		}
+		// Labels go first; only then, with a long repository name, does the title shorten.
+		const wide = issueCard(`o/${"r".repeat(400)}`, issueJson({ title: "\u0001".repeat(256), labels }));
+		assert.ok(Buffer.byteLength(JSON.stringify(wide.data)) <= 1024);
+		assert.deepEqual(wide.data.labels, []);
+		assert.ok(wide.data.title.length > 0 && wide.data.title.length < 120);
+	});
+
+	it("shows no card for a read without a valid number, and none without the host's show", async () => {
+		assert.equal(issueCard("o/api", issueJson({ number: "x" })), undefined);
+		const { gh } = await github(() => JSON.stringify(issueJson()));
+		const readIssue = githubTools(gh, () => {}).tools.find((t) => t.name === "read_issue");
+		assert.match((await readIssue.execute("call_1", { repository: "o/api", number: 12 })).content[0].text, /^o\/api#12 \[open\] Fix the thing/);
+	});
+
+	it("declares its card in the manifest, with its browser files in the package", () => {
+		assert.deepEqual({ ...github_.browser, dir: undefined }, { dir: undefined, entry: "dist/index.js", styles: ["github.css"], cards: ["issue"] });
+		assert.match(github_.browser.dir, /^file:.*\/extension-github\/browser\/$/);
+	});
+});
+
 describe("credentials", () => {
 	const projects = [{ owner: "o", number: 1, repository: "o/r" }];
-	const forUser = (userSettings) => github_.forUser({ user: { id: "alex" }, settings: { piClean: "/pi-clean" }, userSettings, cacheDir: "/tmp", propose: async () => {} });
+	const forUser = (userSettings) => github_.forUser({ user: { id: "alex" }, settings: { piClean: "/pi-clean" }, userSettings, cacheDir: "/tmp", propose: async () => {}, show: () => {} });
 
 	it("needs each user's own credential; the server login only when granted", () => {
 		assert.equal(forUser(undefined), undefined);

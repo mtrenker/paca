@@ -6,8 +6,8 @@
   "engines": { "node": ">=24" },
   "workspaces": ["packages/*"],
   "scripts": {
-    "build": "tsc -p packages/web",
-    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web --noEmit",
+    "build": "tsc -p packages/web && tsc -p packages/extension-github/browser",
+    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web --noEmit && tsc -p packages/extension-github/browser --noEmit",
     "prestart": "npm run build",
     "start": "node packages/api/src/main.ts",
     "ask": "node packages/api/src/ask.ts",

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import type { PageState, SessionInfo, SessionSummary } from "@paca/contracts";
 import type { Oidc, Session, Sessions } from "./auth.ts";
+import type { Frontend } from "./extensions.ts";
 import type { Feed } from "./feed.ts";
 import { SESSION_ID } from "./sessions.ts";
 
@@ -17,7 +18,9 @@ const SECURITY_HEADERS = {
 	"X-Content-Type-Options": "nosniff",
 	"Cache-Control": "no-store",
 };
-const STATIC: Record<string, ["public" | "script", string]> = { "/app.js": ["script", "text/javascript"], "/style.css": ["public", "text/css"], "/icon.svg": ["public", "image/svg+xml"] };
+const STATIC: Record<string, ["public" | "script", string]> = { "/app.js": ["script", "text/javascript"], "/mounts.js": ["script", "text/javascript"], "/style.css": ["public", "text/css"], "/icon.svg": ["public", "image/svg+xml"] };
+/** A package's frontend file: /ext/<package name>/<path listed at start>. */
+const EXT_ASSET = /^\/ext\/([a-z][a-z0-9-]*)\/(.+)$/;
 const MAX_BODY = 16 * 1024;
 const MAX_QUESTION = 4000;
 const SESSION_ROUTE = /^\/api\/sessions\/([^/]+)\/(messages|stop|delete|drafts\/approve|drafts\/dismiss)$/;
@@ -62,10 +65,12 @@ export interface AppDeps {
 	users: { forSubject(subject: string): RouteUser | undefined };
 	/** `public`: HTML, CSS and icon; `script`: the compiled app.js. */
 	web: { public: string; script: string };
+	/** Each package's frontend that is on, by package name (extensions.ts). */
+	frontends?: ReadonlyMap<string, Frontend>;
 	log?: Pick<Console, "warn" | "error">;
 }
 
-export function createApp({ config, sessions, oidc, users, web, log = console }: AppDeps) {
+export function createApp({ config, sessions, oidc, users, web, frontends = new Map(), log = console }: AppDeps) {
 	type Res = ServerResponse;
 	const send = (res: Res, status: number, body: string | Buffer, headers: Record<string, string | string[]> = {}) => {
 		res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
@@ -173,6 +178,17 @@ export function createApp({ config, sessions, oidc, users, web, log = console }:
 		const { sessions: chats } = user;
 
 		if (route === "GET /api/session") return json(res, 200, { csrf: session.csrf, name: session.name, ...user.info } satisfies SessionInfo);
+		const ext = req.method === "GET" ? EXT_ASSET.exec(url.pathname) : null;
+		if (ext) {
+			// Only a package this user's page lists, and only a file listed at start: the path is a key
+			// of that list, never resolved on disk, so traversal and encoded dots find nothing.
+			// A path with dot segments is refused before the URL parser resolves them.
+			const exact = req.url?.split("?")[0] === url.pathname;
+			const file = exact && user.info.extensions?.some((e) => e.name === ext[1]) ? frontends.get(ext[1])?.files.get(ext[2]) : undefined;
+			const content = file && (await readFile(file.path).catch(() => undefined));
+			if (!file || !content) return json(res, 404, { error: "Not found." });
+			return send(res, 200, content, { "Content-Type": file.type, "Cache-Control": "no-cache" });
+		}
 		if (route === "GET /api/events") {
 			const id = url.searchParams.get("session");
 			if (id === null) return events(req, res, chats.list, undefined);

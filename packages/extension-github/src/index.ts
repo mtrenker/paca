@@ -1,10 +1,11 @@
 // Scoped GitHub tools for one user: a Projects overview, issue reads and search, and issue drafts
 // the user approves. Each user brings their own repository scope and credential. How to rank work
-// or phrase answers is the host's persona, not part of these tools.
+// or phrase answers is the host's persona, not part of these tools. A read issue is also shown as a
+// card in the chat, rendered by this package's browser entry (browser/).
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import { defineToolPackage, type Propose, type UserTools } from "@paca/extension";
-import { createGitHub, type GitHub, type Project, WriteRejected } from "./github.ts";
+import { type CardInput, defineToolPackage, type Propose, type Show, type UserTools } from "@paca/extension";
+import { createGitHub, formatIssue, type GitHub, type Project, WriteRejected } from "./github.ts";
 
 export interface GitHubSettings {
 	/** Absolute path of the pi-clean checkout providing github-planning.mjs. */
@@ -45,14 +46,49 @@ function checkUserSettings(id: string, settings: GitHubUserSettings): string | u
 }
 
 /** The part of the GitHub client the tools use; tests pass a stub. */
-export type GitHubAccess = Pick<GitHub, "projects" | "checkRepository" | "overview" | "readIssue" | "searchIssues" | "createIssue">;
+export type GitHubAccess = Pick<GitHub, "projects" | "checkRepository" | "overview" | "issue" | "searchIssues" | "createIssue">;
 
-/** One user's tools over their GitHub access. */
-export function githubTools(github: GitHubAccess, propose: Propose): UserTools {
+const CARD_MAX = 1024;
+const CARD_TITLE_MAX = 120;
+const CARD_LABELS = 5;
+const CARD_LABEL_MAX = 30;
+
+/** Cuts text to `max` UTF-16 units without leaving half a surrogate pair. */
+function clip(text: string, max: number) {
+	const cut = text.slice(0, max);
+	return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+}
+
+/**
+ * The issue card: what Paca read, cut to fit the host's 1 KiB bound. A long title is cut to 120
+ * characters and at most 5 labels of 30 are kept; if that is still too much, the labels go, then
+ * the title shortens. Undefined only if even an empty title would not fit.
+ */
+export function issueCard(repository: string, issue: { number?: unknown; title?: unknown; state?: unknown; labels?: unknown; updatedAt?: unknown }): CardInput | undefined {
+	const number = Number(issue.number);
+	if (!Number.isInteger(number) || number < 1) return undefined;
+	const state = String(issue.state).toLowerCase() === "closed" ? "closed" : "open";
+	const updatedAt = clip(String(issue.updatedAt ?? ""), 40);
+	let title = clip(String(issue.title ?? "").trim(), CARD_TITLE_MAX);
+	let labels = (Array.isArray(issue.labels) ? issue.labels : []).slice(0, CARD_LABELS).map((l) => clip(String(typeof l === "string" ? l : l?.name ?? ""), CARD_LABEL_MAX)).filter(Boolean);
+	const data = () => ({ repository, number, title, state, labels, updatedAt });
+	const fits = () => Buffer.byteLength(JSON.stringify(data())) <= CARD_MAX;
+	if (!fits()) labels = [];
+	while (!fits() && title) title = clip(title, title.length - 8);
+	if (!fits()) return undefined;
+	return {
+		kind: "issue",
+		data: data(),
+		fallback: { text: clip(`${repository}#${number} · ${title || "(no title)"} · ${state}`, 200), url: `https://github.com/${repository}/issues/${number}` },
+	};
+}
+
+/** One user's tools over their GitHub access. `show` is the host's; without it no card is shown. */
+export function githubTools(github: GitHubAccess, propose: Propose, show?: Show): UserTools {
 	const repositories = [...new Set(github.projects.map((p) => p.repository))].sort();
 	const projects = github.projects.map((p) => `- ${p.repository} (Project ${p.owner}/${p.number})`).join("\n");
 	return {
-		tools: tools(github, propose),
+		tools: tools(github, propose, show),
 		prompt: `GitHub scope (nothing else can be read):\n${projects}`,
 		labels: {
 			portfolio_overview: { label: () => "Read all configured Projects", detail: (result) => (result.startsWith("Captured") ? result.split("\n")[0].replace(/\s*\(closed items omitted\)\.?/, "") : "") },
@@ -77,7 +113,7 @@ export function githubTools(github: GitHubAccess, propose: Propose): UserTools {
 	};
 }
 
-function tools(github: GitHubAccess, propose: Propose) {
+function tools(github: GitHubAccess, propose: Propose, show: Show | undefined) {
 	return [
 		defineTool({
 			name: "portfolio_overview",
@@ -91,7 +127,12 @@ function tools(github: GitHubAccess, propose: Propose) {
 			label: "Read issue",
 			description: "Read one issue with its body and recent comments.",
 			parameters: Type.Object({ repository: Type.String({ description: "owner/name" }), number: Type.Integer({ minimum: 1 }) }),
-			execute: async (_id, args) => text(await github.readIssue(args.repository, args.number)),
+			execute: async (toolCallId, args, _signal, _onUpdate, ctx) => {
+				const read = await github.issue(args.repository, args.number);
+				const card = issueCard(read.repository, read.issue);
+				if (card) show?.(toolCallId, ctx, card);
+				return text(formatIssue(read.repository, read.issue));
+			},
 		}),
 		defineTool({
 			name: "search_issues",
@@ -122,12 +163,14 @@ function tools(github: GitHubAccess, propose: Propose) {
 
 export default defineToolPackage<GitHubSettings, GitHubUserSettings>({
 	name: "github",
-	forUser({ user, settings, userSettings, cacheDir, propose }) {
+	// Built by `npm run build` from browser/src into browser/dist.
+	browser: { dir: new URL("../browser/", import.meta.url).href, entry: "dist/index.js", styles: ["github.css"], cards: ["issue"] },
+	forUser({ user, settings, userSettings, cacheDir, propose, show }) {
 		if (userSettings === undefined) return undefined;
 		if (typeof settings?.piClean !== "string") throw new Error("extensions @paca/extension-github: piClean must be the absolute path of a pi-clean checkout");
 		const token = checkUserSettings(user.id, userSettings);
 		const github = createGitHub({ projects: userSettings.projects, piClean: settings.piClean, dataDir: cacheDir, token });
-		return githubTools(github, propose);
+		return githubTools(github, propose, show);
 	},
 });
 

@@ -25,6 +25,8 @@ export interface Config {
 	model?: string;
 	/** Enabled tool packages by npm package name, with each package's settings. */
 	extensions: Record<string, unknown>;
+	/** Enabled packages whose frontend is off: their cards show text, their tools still work. */
+	disableFrontends: string[];
 	users: UserConfig[];
 }
 
@@ -54,6 +56,10 @@ export async function loadConfig({ needWeb = true } = {}): Promise<Config> {
 		extensions = raw.extensions;
 	}
 	for (const name of Object.keys(extensions)) if (!PACKAGE_NAME.test(name)) fail(`extensions: ${JSON.stringify(name)} is not an npm package name`);
+	const disableFrontends = raw.disableFrontends ?? [];
+	if (!Array.isArray(disableFrontends) || !disableFrontends.every((name) => typeof name === "string" && Object.hasOwn(extensions, name))) {
+		fail("disableFrontends must list packages enabled under extensions");
+	}
 	const ids = new Set<string>();
 	const subjects = new Set<string>();
 	for (const u of users) {
@@ -66,7 +72,7 @@ export async function loadConfig({ needWeb = true } = {}): Promise<Config> {
 	}
 	if (users.filter((u) => u.operator).length > 1) fail("users: only one user can be the operator");
 
-	const config = { ...raw, users, extensions } as Config;
+	const config = { ...raw, users, extensions, disableFrontends } as Config;
 	if (needWeb) {
 		const url = new URL(raw.publicUrl ?? fail("publicUrl is required"));
 		if (url.protocol !== "https:" && !isLoopbackHttp(url)) fail("publicUrl must be https (or http://localhost for a local preview)");
