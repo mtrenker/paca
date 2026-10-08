@@ -144,18 +144,22 @@ of it appears only for a user with that package's tools.
 
 ## Frontends
 
-A tool package may also ship browser code that renders **cards** in the chat
-([#17](https://github.com/mtrenker/paca/issues/17); pages, navigation and proposals from pages
-come later). The package stays trusted and installed by the operator; its browser code runs with
-the page's full authority.
+A tool package may also ship browser code that renders **cards** in the chat and **pages** of the
+web app, with one link in the side list ([#17](https://github.com/mtrenker/paca/issues/17);
+proposals from pages come later). The package stays trusted and installed by the operator; its
+browser code runs with the page's full authority. An extension's author picks the framework: the
+GitHub package uses plain DOM, and a test-only Preact fixture proves a framework bundle meets the
+same contract (below).
 
-- **Manifest.** `defineToolPackage({ browser: { dir, entry, styles, cards } })`: a file URL of a
-  directory inside the package, the ES module to import and the stylesheets to link (relative to
-  `dir`), and the card kinds. It is declared in code, never taken from a tool's output. At start
+- **Manifest.** `defineToolPackage({ browser: { dir, entry, styles, cards, pages, nav } })`: a
+  file URL of a directory inside the package, the ES module to import and the stylesheets to link
+  (relative to `dir`), the card kinds, the pages with their titles, and one side-list link to a
+  page that needs no parameters. It is declared in code, never taken from a tool's output. At start
   `extensions.ts` checks it, and a malformed manifest refuses the start. It then lists `dir` once
   into a fixed map of `.js`, `.css` and `.svg` files (no dotfiles or symlinks, at most 200 files
   and 5 MiB). Missing built files log one line and turn that frontend off; `disableFrontends` in
-  the config does the same on purpose. Either way the tools keep working.
+  the config does the same on purpose. Either way the tools keep working, and the package's
+  assets, operations and nav link are gone.
 - **Serving.** `GET /ext/<package>/<path>` answers only a signed-in user whose page lists the
   package (`SessionInfo.extensions`: packages that gave this user tools and whose frontend is on),
   and only for a path in the map; the path is a key, never resolved on disk, so traversal, encoded
@@ -178,10 +182,33 @@ the page's full authority.
   remounts and focus inside a card survives an answer streaming. A package's module and styles
   load the first time one of its cards is shown. Without the package, or when its module or mount
   fails, the card shows its fallback text, and failures go to the browser console only.
+- **Pages and navigation.** A page is a URL: `/?page=<package>.<page>&session=<id>&<params>`.
+  `page`, `session` and `new` are reserved, and every other parameter goes to the page. `GET /`
+  serves the page for any query, so a refreshed or bookmarked page URL works. The side list shows
+  each package's nav link above Sessions (on a phone, on the list screen), carrying the open
+  session so a page's links stay with it; without an open session it carries none. A page shows
+  the manifest's title as its `<h1>`, which takes focus after navigation, then the package's
+  container, with "Back to session" while its session exists; the composer is hidden. At most one
+  page is mounted, keyed by its URL, and disposed when the user navigates away. Plain clicks on
+  same-origin links marked `data-paca-nav` navigate in place; an unknown page, or a package not
+  enabled for the user, shows "This page isn't available."
+- **Operations.** Pages read fresh data through named reads a package returns from `forUser`
+  (`operations`), so they close over that user's credential and scope like the tools. The browser
+  calls `POST /api/ext/<package>/<op>` with a JSON object of at most 16 KiB, through the usual
+  Origin and CSRF checks, and only for a package the user's page lists. The host aborts an
+  operation after 25 seconds (504) and refuses an answer over 512 KiB (502), logging one line for
+  either. An `OperationError` reaches the page with its status and message; anything else thrown
+  is a 500 with one log line naming the user. Operations only read; writes stay proposals.
 - **Browser contract.** `@paca/extension/browser` holds types only: the entry's default export
-  maps each card kind to `mount(container, { id, data, createdAt, context })`, which returns
-  `{ dispose() }`. The extension owns everything inside the container; its CSS is scoped under
-  `.ext-<package>` and may use the page's custom properties.
+  maps each card kind to `mount(container, { id, data, createdAt, context })` and each page to
+  `mount(container, { params, context })`, which return `{ dispose() }`. `context` is per mount:
+  `call(op, input)` for operations (aborted when the mount is disposed), and `href` and `navigate`
+  for the package's own pages, keeping the session. The extension owns everything inside the
+  container; its CSS is scoped under `.ext-<package>` and may use the page's custom properties.
+- **Framework proof.** `test/fixtures/extension-preact` is a Preact package bundled by esbuild,
+  never installed or shipped. `npm run test:browser` drives Chrome with `puppeteer-core` against
+  the real server and page: its card keeps Preact state and focus across updates and is disposed
+  once, its page calls an operation through the host, and nothing violates the CSP.
 
 ## Future extension storage (not built)
 

@@ -226,8 +226,9 @@ throwaway certificate and data. It checks:
 - the container runs as uid 1000 and the image's health check passes;
 - without a session, `/` redirects to sign-in and the chat and draft endpoints answer 401;
 - another subject is refused, the allowed one signs in;
-- after sign-in the session lists the GitHub package's frontend, and its card module and
-  stylesheet are served with the page's CSP (401 without a session, sources 404);
+- after sign-in the session lists the GitHub package's frontend with its nav entry, its module
+  and stylesheet are served with the page's CSP (401 without a session, sources 404), a page's
+  deep link loads, and neither the test-only Preact fixture nor Preact is in the image;
 - a wrong `Origin` or CSRF token is refused;
 - a question starts a session and gets an answer with one proposed draft; the session list
   shows it with one draft waiting;

@@ -25,6 +25,10 @@ syntax: no enums, namespaces or constructor parameter properties. Only the page 
 - Add a focused test for changed behavior, especially anything touching sign-in, sessions,
   users, repository scope, limits or GitHub writes. Tests live in `packages/*/test/` and run with
   `node --test`.
+- `npm run test:browser` builds the page and the test-only Preact fixture and drives Chrome with
+  `puppeteer-core` (no browser download). It uses `CHROME_BIN` if set, for example
+  `CHROME_BIN=/usr/bin/chromium`, or else an installed Google Chrome. Without one it skips with a
+  line naming `CHROME_BIN`; in CI it fails.
 - Use the fakes the tests already use: pi-ai's faux provider for models, a stub `run` function or
   stub `github` object for GitHub, `test/container/fake-herdr.mjs` for Herdr's socket, and stub
   `oidc` objects and users for the server. Tests must not call a real model, GitHub, Herdr or an
@@ -37,11 +41,11 @@ syntax: no enums, namespaces or constructor parameter properties. Only the page 
 `npm run preview` runs Paca with two synthetic users, `martin` and `alex`, and no real
 credentials: a fake OIDC provider and a fake model (from `test/container/fakes.mjs`), and a fake
 `gh` that answers issue creation with a made-up issue, so **Create issue** never reaches GitHub.
-It also answers reading one issue with a synthetic issue; other reads are not faked and show as
-unavailable. The fake model drafts one issue in the user's own repository for every question,
+It also answers reading, searching and listing issues with synthetic issues; other reads, such as
+the Projects overview, are not faked and show as unavailable. The fake model drafts one issue in the user's own repository for every question,
 unless the question names an issue such as `preview-martin/notes#12`: then it reads that issue,
 which shows the issue card, and streams its answer slowly, so you can tab into the card while the
-text grows. `martin` is the operator and also has a fake Herdr with two agents in scope and one
+text grows. **GitHub** in the side list opens the GitHub pages on the same synthetic issues. `martin` is the operator and also has a fake Herdr with two agents in scope and one
 outside it: a question that mentions an agent lists them and proposes a prompt, and
 **Send prompt** only records it in the fake (the preview's terminal says so).
 

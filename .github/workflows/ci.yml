@@ -1,6 +1,6 @@
 name: ci
 
-# Pull requests typecheck, build and run the tests, build the image and smoke-test it, with a read-only token and
+# Pull requests typecheck, build and run the tests (with a browser check in Chrome), build the image and smoke-test it, with a read-only token and
 # no registry login. Pushes to main do the same and then publish ghcr.io/mtrenker/paca.
 
 on:
@@ -24,6 +24,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+      # Builds the page and the Preact fixture, then drives the runner's Google Chrome.
+      - run: npm run test:browser
 
   image:
     runs-on: ubuntu-latest

@@ -2,3 +2,4 @@ node_modules/
 .data/
 packages/web/dist/
 packages/extension-github/browser/dist/
+test/fixtures/extension-preact/browser/dist/

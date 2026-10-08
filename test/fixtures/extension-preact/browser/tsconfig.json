@@ -1,0 +1,14 @@
+{
+  // Type-checks the fixture's Preact entry; `npm run build:fixture` bundles it with esbuild.
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "types": [],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "noEmit": true
+  },
+  "include": ["src"]
+}
