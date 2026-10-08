@@ -63,6 +63,27 @@ To see cards as fallback text, start a second preview with the GitHub frontend s
 PACA_PORT=4412 PACA_PREVIEW_FRONTENDS=off npm run preview
 ```
 
+To open a preview from another device, put an HTTPS proxy in front of two of its ports and tell
+the preview the origins the browser uses: Paca itself, and the fake sign-in page, which must be
+HTTPS. Every listener stays on loopback, and the fake model and token service on `PACA_PORT + 1`
+are never exposed. With [Tailscale Serve](https://tailscale.com/kb/1312/serve), private to your
+tailnet (not Funnel), on a machine whose MagicDNS name is `<host>.<tailnet>.ts.net`:
+
+```sh
+PACA_PORT=4402 PACA_PREVIEW_PUBLIC_URL=https://<host>.<tailnet>.ts.net:8443 \
+  PACA_PREVIEW_LOGIN_URL=https://<host>.<tailnet>.ts.net:8444 npm run preview
+tailscale serve --https=8443 http://127.0.0.1:4402            # Paca, in a second terminal
+tailscale serve --https=8444 https+insecure://localhost:4404  # the fake sign-in page, in a third
+```
+
+Each `tailscale serve` stays in the foreground and removes its endpoint when stopped with Ctrl-C;
+one started with `--bg` is removed with `tailscale serve --https=8443 off` (and `8444`). Avoid
+`tailscale serve reset`, which removes every endpoint of the machine. Serve needs root, or
+`sudo tailscale set --operator=$USER` once. Both values must be origins without a path; a
+preview with them set can be signed in to only through the proxy. Cookies do not separate ports:
+previews served under the same host name share the `__Host-paca` cookie, so signing in to one
+signs you out of another. Use a different host name or browser profile for a second preview.
+
 ## Keep private data out
 
 Never commit `.data/`, secrets, tokens, `.env` files, conversation databases, screenshots of
