@@ -232,6 +232,8 @@ throwaway certificate and data. It checks:
 - a wrong `Origin` or CSRF token is refused;
 - a question starts a session and gets an answer with one proposed draft; the session list
   shows it with one draft waiting;
+- a page proposal with no open session makes a new session holding its draft, a retry naming
+  another session id finds the same draft, and the session is deleted without approving it;
 - `docker stop` exits 0 within the grace period, and the secrets never appear in the logs;
 - a new container on the same volume keeps the session key, the session and the draft;
 - with a users config and a fake Herdr socket mounted read-only, the operator's question in a new

@@ -13,7 +13,7 @@ not built.
 
 | # | Decision | Why |
 | --- | --- | --- |
-| 1 | Shared types ship only what cards use (increment 2 added pages, nav, `call`, `href` and `navigate`; `propose` waits for increment 3). `BrowserManifest` has `dir`, `entry`, `styles` and `cards`; `ExtensionInfo` has `name`, `entry`, `styles` and `cards`; `HostContext` has `package` and `session`; `BrowserExtension` has `cards`. Increments 2 and 3 add `pages`, `nav`, `call`, `href`, `navigate` and `propose` as the contract defines them | Each addition is additive and every consumer is in this repository, so nothing unused ships and nothing changes shape later |
+| 1 | Shared types ship only what cards use (increment 2 added pages, nav, `call`, `href` and `navigate`; increment 3 added `propose`). `BrowserManifest` has `dir`, `entry`, `styles` and `cards`; `ExtensionInfo` has `name`, `entry`, `styles` and `cards`; `HostContext` has `package` and `session`; `BrowserExtension` has `cards`. Increments 2 and 3 add `pages`, `nav`, `call`, `href`, `navigate` and `propose` as the contract defines them | Each addition is additive and every consumer is in this repository, so nothing unused ships and nothing changes shape later |
 | 2 | Until the issue page exists, the issue card's title links to the issue on GitHub (`rel="noreferrer"`, new tab). Increment 2 points it at the issue page through `context.href` (done; "Open on GitHub" is on the issue page) | The contract's card links to the issue page, which is increment 2 |
 | 3 | The card shows the clock time Paca read the issue ("Read 08:51", or a date), not "5 min ago" | A card is mounted once and never re-rendered, so a relative time would go stale on an open page |
 | 4 | `/ext/` answers 404 for any path with dot segments, even one that would resolve to a listed file of the same package: the raw request path must equal the parsed one | The contract says traversal answers 404; the URL parser would otherwise resolve `dist/../app.css` before the lookup |
@@ -61,3 +61,27 @@ and opened a result with focus on the page title, history Back and "Back to sess
 phone layout had no horizontal scroll, an out-of-scope deep link answered inline, and there were
 no CSP violations. With the frontend off, the nav entry was gone, a GitHub page URL showed the
 unavailable notice, and operations answered 404.
+
+## Increment 3: direct proposals
+
+Written by Claude Opus 5.5 on 2026-10-08, after Martin accepted the increment 2 checkpoint.
+
+| # | Decision | Why |
+| --- | --- | --- |
+| 1 | The `issue` operation also returns `repositories`, the scope, which the follow-up form offers | The contract's form needs the scope; the `issue` result had no field for it, and `issues` would cost a GitHub search. Additive, and no GitHub call |
+| 2 | Admission reads the draft and the session row and inserts in one `BEGIN IMMEDIATE` transaction, rather than one guarded `INSERT` | node:sqlite is synchronous and the transaction holds the write lock, so no delete mark, claim or other admission can fall between the read and the insert; it is the same rule `claim` relies on |
+| 3 | A found `page:` draft whose session is being deleted answers 409 "being deleted" before the content is compared | Its session is going away; neither "duplicate" (a session the page would open) nor "conflict" is true |
+| 4 | A proposal into an open session moves it to the top of the list (`last_activity`) | Like a question, it is new activity the user just made, and it adds a waiting draft |
+| 5 | The `SessionManager` for a new session is made only when the row was absent just before admission, and kept (`liveOf(id).created`) only if the transaction created the row | A duplicate, a conflict or a concurrent start leaves nothing behind; the manager writes no file until the first message |
+| 6 | A builder result that is not plain strings, names another action, or is over 128 KiB is a 500 with the builder-crash log line | It is the package's bug, not the user's input |
+| 7 | The route checks the package is on the user's page before the sessions see it; `requestId` is 8 to 64 of `[A-Za-z0-9_-]`, `input` must be an object, `start` a boolean | The contract's identity and package rows, and a 400 for a malformed body |
+| 8 | `draft_issue` now throws the builder's `OperationError`s (an `Error`), so the model's messages for an empty title or a long body are the page's ("A title needs 1 to 256 characters."); the scope message is unchanged | One function validates both, as the contract asks; tests check only the status of those steps |
+| 9 | The answer in progress stays with the last question even when a page draft's turn sits after it | Placement by time can put a page draft after a running question; "Thinking…" belongs to that question |
+| 10 | The follow-up form says where its draft goes: the open session, or a new one | The user should know before submitting; the button says "Propose", never "Create" |
+
+Checked at the increment 3 stopping point: `npm run typecheck`, `npm run build`, `npm test` (167),
+`npm run test:browser` and `npm run test:container` (with a page proposal, its duplicate retry and
+an unapproved delete), plus the synthetic preview through the tailnet in Chromium: a proposal from
+a card's issue page landed in that session after its question, marked as from a page, and
+**Create issue** created it once; from the list with no session, a double-clicked Propose whose
+first answer was cut off on the way back made one new session with one draft.

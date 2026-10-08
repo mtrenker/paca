@@ -246,7 +246,18 @@ async function main() {
 		assert.equal(draft.status, "proposed");
 		const list = await waitFor(first.base, cookie, session, (event, value) => event === "sessions" && value.some((s) => s.id === session && s.waiting === 1 && !s.running));
 		assert.equal(list.length, 1);
+		// A page proposal with no open session makes a new session holding the draft. Nobody approves
+		// it, so nothing reaches GitHub; its retry under another new session id is a duplicate.
+		const pageSession = randomUUID();
+		const proposal = { requestId: `smoke-page-${run}`, package: "github", action: "create_issue", input: { repository: "example/repo", title: "Smoke follow-up", body: "Follow-up to example/repo#1." }, start: true };
+		const proposed = await post(`/api/sessions/${pageSession}/proposals`, proposal);
+		assert.deepEqual(await proposed.json(), { session: pageSession, draft: `page:smoke-page-${run}`, duplicate: false });
+		assert.deepEqual(await (await post(`/api/sessions/${randomUUID()}/proposals`, proposal)).json(), { session: pageSession, draft: `page:smoke-page-${run}`, duplicate: true });
+		const pageState = await waitFor(first.base, cookie, pageSession, (event, value) => event === "state" && value.turns.length === 1);
+		assert.deepEqual(pageState.turns[0].drafts.map((d) => [d.title, d.status, d.fromPage]), [["Smoke follow-up", "proposed", true]]);
+		assert.equal((await post(`/api/sessions/${pageSession}/delete`, {})).status, 200);
 		step("wrong Origin and CSRF refused (403), bad id (400), old route (410); a new session answered by the fake model with one proposed draft waiting");
+		step("a page proposal made a new session holding its draft, a retry under another session id was a duplicate, and the session was deleted unapproved");
 
 		await stopApp(first.name);
 		await docker("rm", first.name);

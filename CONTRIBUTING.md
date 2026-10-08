@@ -45,7 +45,9 @@ It also answers reading, searching and listing issues with synthetic issues; oth
 the Projects overview, are not faked and show as unavailable. The fake model drafts one issue in the user's own repository for every question,
 unless the question names an issue such as `preview-martin/notes#12`: then it reads that issue,
 which shows the issue card, and streams its answer slowly, so you can tab into the card while the
-text grows. **GitHub** in the side list opens the GitHub pages on the same synthetic issues. `martin` is the operator and also has a fake Herdr with two agents in scope and one
+text grows. **GitHub** in the side list opens the GitHub pages on the same synthetic issues, and
+an issue's **Propose follow-up issue** puts a draft in the open session, or a new one; **Create
+issue** on it answers with a made-up issue. `martin` is the operator and also has a fake Herdr with two agents in scope and one
 outside it: a question that mentions an agent lists them and proposes a prompt, and
 **Send prompt** only records it in the fake (the preview's terminal says so).
 

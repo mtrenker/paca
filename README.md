@@ -26,6 +26,9 @@ process, and depends on the Pi SDK (pi-coding-agent 1.0.3), which changes often.
 - GitHub pages: **GitHub** in the side list opens your repositories, an issue search with a
   repository filter, and recent open issues. An issue's page reads it fresh, with its body and
   latest comments. Page URLs can be refreshed and bookmarked.
+- Follow-up issues from a page: **Propose follow-up issue** on an issue's page puts an exact draft
+  in the open session, or in a new session when none is open, marked "Proposed from a page, not by
+  Paca." **Create issue** on that card creates it, once, as for Paca's own drafts.
 - Several saved sessions per user. **New session** starts one with its first question; the list
   shows each session with **Answering** while it answers and the number of drafts waiting.
   Sessions answer at the same time, each with its own Stop and limits, and persist across

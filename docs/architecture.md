@@ -145,11 +145,11 @@ of it appears only for a user with that package's tools.
 ## Frontends
 
 A tool package may also ship browser code that renders **cards** in the chat and **pages** of the
-web app, with one link in the side list ([#17](https://github.com/mtrenker/paca/issues/17);
-proposals from pages come later). The package stays trusted and installed by the operator; its
-browser code runs with the page's full authority. An extension's author picks the framework: the
-GitHub package uses plain DOM, and a test-only Preact fixture proves a framework bundle meets the
-same contract (below).
+web app, with one link in the side list, and its pages may propose exact writes for the user's
+approval ([#17](https://github.com/mtrenker/paca/issues/17)). The package stays trusted and
+installed by the operator; its browser code runs with the page's full authority. An extension's
+author picks the framework: the GitHub package uses plain DOM, and a test-only Preact fixture
+proves a framework bundle meets the same contract (below).
 
 - **Manifest.** `defineToolPackage({ browser: { dir, entry, styles, cards, pages, nav } })`: a
   file URL of a directory inside the package, the ES module to import and the stylesheets to link
@@ -199,11 +199,26 @@ same contract (below).
   operation after 25 seconds (504) and refuses an answer over 512 KiB (502), logging one line for
   either. An `OperationError` reaches the page with its status and message; anything else thrown
   is a 500 with one log line naming the user. Operations only read; writes stay proposals.
+- **Page proposals.** A page can propose an exact write without the model: `context.propose(action,
+  input)` posts to `/api/sessions/<id>/proposals`. Only an action whose package declares both a
+  builder (`proposals`, which validates the input and the user's scope and never writes) and a
+  write accepts it; in this work that is GitHub's `create_issue`, built by the same function as
+  `draft_issue`. The host checks the built proposal (plain strings, at most 128 KiB, the route's
+  own body bound) and admits it in one `paca.db` transaction as the draft `page:<requestId>`:
+  the request id is looked up across the user's whole store first, so a repeat, or a retry that
+  names another new session, answers with the stored draft, and changed content is a 409.
+  Otherwise the draft goes into the open session while it is active, or, with no session open,
+  into a new session made in the same transaction ("GitHub: <title>", no file until it is
+  opened). The page fixes both ids before its one retry. From there the existing approval card,
+  claim, write and `unknown` recovery take over; a delete marked first refuses the proposal, and
+  one marked after removes the draft unapproved. A page draft shows in its own turn, before the
+  first question asked after it, with "Proposed from a page, not by Paca."; the model is not told.
 - **Browser contract.** `@paca/extension/browser` holds types only: the entry's default export
   maps each card kind to `mount(container, { id, data, createdAt, context })` and each page to
   `mount(container, { params, context })`, which return `{ dispose() }`. `context` is per mount:
-  `call(op, input)` for operations (aborted when the mount is disposed), and `href` and `navigate`
-  for the package's own pages, keeping the session. The extension owns everything inside the
+  `call(op, input)` for operations (aborted when the mount is disposed), `propose(action, input)`
+  (not aborted: a sent proposal may be stored), and `href` and `navigate` for the package's own
+  pages, keeping the session. The extension owns everything inside the
   container; its CSS is scoped under `.ext-<package>` and may use the page's custom properties.
 - **Framework proof.** `test/fixtures/extension-preact` is a Preact package bundled by esbuild,
   never installed or shipped. `npm run test:browser` drives Chrome with `puppeteer-core` against
