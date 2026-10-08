@@ -85,3 +85,15 @@ an unapproved delete), plus the synthetic preview through the tailnet in Chromiu
 a card's issue page landed in that session after its question, marked as from a page, and
 **Create issue** created it once; from the list with no session, a double-clicked Propose whose
 first answer was cut off on the way back made one new session with one draft.
+
+## Independent review at `5f7e501`: dispositions
+
+An independent Opus review of the unpublished branch reported one blocking and three
+nonblocking findings, and no design gaps. Each was checked here before anything changed.
+
+| # | Disposition | Evidence and change |
+| --- | --- | --- |
+| B1 An operation that throws synchronously crashes the server | **Confirmed, fixed** | A non-async operation that throws skipped `Promise.race`, so the abort promise's rejection had no handler when the response's close aborted it. Reproduced in `operations.test.js` (an unhandled `AbortError`). `operate()` now calls the operation inside a promise. Regression: a synchronous `OperationError` answers 400, a synchronous crash 500 with one log line, no unhandled rejection, and the next call still works |
+| N1 The browser check missed CSP violations in earlier documents | **Confirmed, fixed** | Violations were kept per document, and the final check saw only the last one. They are now reported to the test with `page.exposeFunction` and add up across navigations. A violation injected while the card was mounted now fails the check (tried, then removed), and a permanent negative control shows a violation followed by a navigation is still counted |
+| N2 The nav link kept a deleted session | **Confirmed, fixed** | `renderNav` passed the URL's session unchecked, so a proposal after following the nav from a page whose session was deleted got a 404, against the contract's "proposing from the nav entry works". The link now carries the session only while it is in the list. The browser check asserts both a live session going along and a dead one being dropped; it failed on the old build |
+| N3 Inherited names counted as pages | **Confirmed, fixed** | `pages[ref.page]` and the module's mount lookup were plain-object reads, so `?page=github.constructor` said "could not be loaded" instead of "not enabled for you". Both are own-property lookups now (`pageTitle` in `mounts.ts`), with tests |

@@ -4,7 +4,7 @@
 // Model text becomes DOM nodes through a small Markdown subset; nothing is parsed as HTML.
 // Turns are kept by id across updates, so extension cards stay mounted while an answer streams.
 import type { CardRef, DraftCard, PageState, SessionInfo, SessionSummary, Turn } from "@paca/contracts";
-import { createMounts, hostContext, type PageRef, pageHref, readPage } from "./mounts.js";
+import { createMounts, hostContext, type PageRef, pageHref, pageTitle, readPage } from "./mounts.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const EMPTY: PageState = { running: false, turns: [] };
@@ -135,7 +135,7 @@ function renderPage() {
 		document.title = "Paca";
 		return;
 	}
-	const title = info.extensions?.find((e) => e.name === page!.package)?.pages[page.page]?.title ?? "Page unavailable";
+	const title = pageTitle(info.extensions, page) ?? "Page unavailable";
 	$("page-title").textContent = title;
 	document.title = `${title} · Paca`;
 	const container = cards.page(page);
@@ -165,10 +165,12 @@ function renderNav() {
 		nav.append(item);
 	}
 	nav.hidden = navLinks.size === 0;
+	// The open session goes along, so a page's links and proposals stay with it; a session that no
+	// longer exists does not, so a proposal from there starts a new session instead of failing.
+	const session = current && sessions.some((s) => s.id === current) ? current : undefined;
 	for (const [name, a] of navLinks) {
 		const ext = info.extensions.find((e) => e.name === name)!;
-		// The open session goes along, so a page's links and proposals stay with it.
-		a.href = pageHref(name, ext.nav!.page, {}, current);
+		a.href = pageHref(name, ext.nav!.page, {}, session);
 		if (page?.package === name) a.setAttribute("aria-current", "page");
 		else a.removeAttribute("aria-current");
 	}
@@ -324,7 +326,7 @@ const cards = createMounts<HTMLElement>({
 		}
 		return import(ext.entry).then((module) => module.default);
 	},
-	pageAvailable: (ref) => Boolean(info.extensions?.find((e) => e.name === ref.package)?.pages[ref.page]),
+	pageAvailable: (ref) => pageTitle(info.extensions, ref) !== undefined,
 	create(card) {
 		const container = el("div", EXT_NAME.test(card.package) ? `ext ext-${card.package}` : "ext");
 		container.dataset.cardId = card.id;

@@ -52,7 +52,8 @@ describe("a framework extension under the page's CSP", { skip: !browser }, () =>
 	const card = { id: "call_1:0", package: "preact-fixture", kind: "counter", data: {}, fallback: { text: "A counter" }, createdAt: "2026-10-08T00:00:00Z" };
 	const turn = (answer, cards) => ({ running: true, turns: [{ id: "t1", question: "Count with me", steps: [], answer: "", draft: answer, notices: [], drafts: [], cards }] });
 	const counts = () => page.evaluate(() => ({ ...document.documentElement.dataset }));
-	const violations = () => page.evaluate(() => window.__violations);
+	/** Every CSP violation in every document the page loaded, reported to the test as it happens. */
+	const violations = [];
 
 	before(async () => {
 		const [fixture] = await loadPackages({ "@paca-test/extension-preact": {} }, () => import(join(FIXTURE, "index.ts")), { rootOf: () => FIXTURE, log: { log: () => {} } });
@@ -85,9 +86,9 @@ describe("a framework extension under the page's CSP", { skip: !browser }, () =>
 		page = await browser.newPage();
 		// Wide enough for the side list beside the session; on a phone the nav is on the list screen.
 		await page.setViewport({ width: 1280, height: 900 });
+		await page.exposeFunction("__pacaViolation", (violation) => violations.push(violation));
 		await page.evaluateOnNewDocument(() => {
-			window.__violations = [];
-			document.addEventListener("securitypolicyviolation", (e) => window.__violations.push(`${e.violatedDirective} ${e.blockedURI}`));
+			document.addEventListener("securitypolicyviolation", (e) => window.__pacaViolation(`${location.search} ${e.violatedDirective} ${e.blockedURI}`));
 		});
 		page.on("response", (r) => r.url().startsWith(base) && r.headers()["content-type"]?.startsWith("text/html") && cspHeaders.add(r.headers()["content-security-policy"]));
 		// Sign in through the real routes; the session cookie is Secure, which Chrome keeps on localhost.
@@ -150,14 +151,36 @@ describe("a framework extension under the page's CSP", { skip: !browser }, () =>
 		await page.goto(`${base}/?page=preact-fixture.demo&session=${SESSION}`);
 		await page.waitForFunction(() => document.querySelector(".fixture-echo")?.textContent.startsWith("{"));
 		assert.equal(await page.$eval("#page-back", (a) => !a.hidden && new URL(a.href).search), `?session=${SESSION}`);
+		assert.equal(await page.$eval(".ext-nav-link", (a) => new URL(a.href).search), `?page=preact-fixture.demo&session=${SESSION}`, "a live session goes along");
+		// A page whose session is gone: no Back to session, and the nav link starts afresh, so a
+		// proposal from there makes a new session instead of failing.
+		await page.goto(`${base}/?page=preact-fixture.demo&session=${randomUUID()}`);
+		await page.waitForFunction(() => document.querySelector(".fixture-echo")?.textContent.startsWith("{"));
+		await page.waitForFunction(() => new URL(document.querySelector(".ext-nav-link").href).search === "?page=preact-fixture.demo");
+		assert.equal(await page.$eval("#page-back", (a) => a.hidden), true);
 		await page.goto(`${base}/?page=preact-fixture.missing`);
 		await page.waitForSelector(".page-unavailable");
 		assert.match(await page.$eval(".page-unavailable", (p) => p.textContent), /isn’t available/);
 	});
 
-	it("caused no CSP violation, under the unchanged policy", async () => {
-		assert.deepEqual(await violations(), []);
+	it("caused no CSP violation in any document, under the unchanged policy", async () => {
+		assert.deepEqual(violations, []);
 		assert.equal((await counts()).fixtureCspViolations, undefined);
 		assert.deepEqual([...cspHeaders], [CSP]);
+	});
+
+	it("would have counted a violation in an earlier document (negative control)", async () => {
+		await page.goto(`${base}/?page=preact-fixture.demo&session=${SESSION}`);
+		await page.waitForSelector(".fixture-echo");
+		// A remote image breaks img-src 'self'; then the page moves on to another document.
+		await page.evaluate(() => {
+			const img = document.createElement("img");
+			img.src = "https://example.test/blocked.png";
+			document.body.append(img);
+		});
+		for (let i = 0; i < 50 && violations.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+		await page.goto(`${base}/?session=${SESSION}`);
+		assert.equal(violations.length, 1);
+		assert.match(violations[0], /^\?page=preact-fixture\.demo.* img-src https:\/\/example\.test\/blocked\.png$/);
 	});
 });

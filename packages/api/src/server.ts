@@ -155,7 +155,9 @@ export function createApp({ config, sessions, oidc, users, web, frontends = new 
 		const aborted = new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true }));
 		const where = `extension ${name} op ${opName}`;
 		try {
-			const value = await Promise.race([op(input, controller.signal), aborted]);
+			// Called inside a promise, so one that throws before returning a promise still reaches the
+			// race, which handles `aborted`; an unhandled rejection would stop the server.
+			const value = await Promise.race([Promise.resolve().then(() => op(input, controller.signal)), aborted]);
 			const text = JSON.stringify(value ?? null);
 			if (Buffer.byteLength(text) > OPERATION_MAX) {
 				log.warn(`paca: ${where} answered ${Buffer.byteLength(text)} bytes for user ${user.id}`);

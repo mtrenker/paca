@@ -5,7 +5,7 @@
 // Each mount gets its own context, whose pending calls are aborted when it is disposed.
 // DOM-free: the page injects how to make and remove containers, load a package and call the API,
 // so `node --test` runs this on the TypeScript source.
-import type { CardRef } from "@paca/contracts";
+import type { CardRef, ExtensionInfo } from "@paca/contracts";
 import type { BrowserExtension, HostContext, Mounted } from "@paca/extension/browser";
 
 /** An extension page as the URL names it: /?page=<package>.<page>&session=<id>&<params>. */
@@ -69,6 +69,12 @@ export function readPage(search: string): PageRef | undefined {
 	const valid = NAME.test(pkg) && NAME.test(page) && rest.length === 0;
 	const sorted = new URLSearchParams(Object.keys(params).sort().map((k) => [k, params[k]]));
 	return { key: `${name} ${session ?? ""} ${sorted}`, package: valid ? pkg : "", page: valid ? page : "", params, ...(session ? { session } : {}) };
+}
+
+/** The title of a page the user's page lists, or undefined: own properties only, so "constructor" is no page. */
+export function pageTitle(extensions: readonly ExtensionInfo[] | undefined, ref: Pick<PageRef, "package" | "page">): string | undefined {
+	const pages = extensions?.find((e) => e.name === ref.package)?.pages;
+	return pages && Object.hasOwn(pages, ref.page) ? pages[ref.page].title : undefined;
 }
 
 /** The URL of a package's page, keeping `session`. Throws for a malformed name or a reserved parameter. */
@@ -166,7 +172,8 @@ export function createMounts<C>(deps: MountDeps<C>) {
 		const module = await moduleOf(pkg);
 		if (slot.gone) return;
 		if (!module) return fail();
-		const fn = module[group]?.[kind];
+		const mounts = module[group];
+		const fn = mounts && Object.hasOwn(mounts, kind) ? mounts[kind] : undefined;
 		const what = `${group === "cards" ? "card" : "page"} ${kind}`;
 		if (typeof fn !== "function") {
 			warnOnce(`${pkg}.${group}.${kind}`, `paca: extension ${pkg} has no mount for ${what}`);

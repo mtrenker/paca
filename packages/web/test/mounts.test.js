@@ -1,7 +1,7 @@
 // The page's card registry on its TypeScript source, with fake containers instead of the DOM.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createMounts, hostContext, pageHref, readPage } from "../src/mounts.ts";
+import { createMounts, hostContext, pageHref, pageTitle, readPage } from "../src/mounts.ts";
 
 const card = (id, extra = {}) => ({ id, package: "github", kind: "issue", data: { n: id }, fallback: { text: `fallback ${id}` }, createdAt: "2026-10-08T00:00:00Z", ...extra });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -150,6 +150,17 @@ describe("page mounts", () => {
 		assert.equal(log.signals[1].aborted, true);
 	});
 
+	it("mounts only a package's own page and card mounts, not inherited properties", async () => {
+		const { mounts, log } = registry({ module: { cards: {}, pages: {} } });
+		mounts.page({ key: "github.constructor  ", package: "github", page: "constructor", params: {} });
+		render(mounts, [card("a", { kind: "constructor" })]);
+		await settle();
+		assert.deepEqual(log.fallbacks, [["page ", true], ["a", true]]);
+		assert.deepEqual(log.mounts, []);
+		// Not "constructor failed: mount returned no dispose()": Object was never called as a mount.
+		assert.deepEqual(log.warnings, ["paca: extension github has no mount for page constructor", "paca: extension github has no mount for card constructor"]);
+	});
+
 	it("shows the unavailable notice for a page the page does not list, or whose mount is missing", async () => {
 		const off = registry({ pageAvailable: () => false });
 		off.mounts.page(page(1));
@@ -175,6 +186,14 @@ describe("page URLs and contexts", () => {
 		});
 		assert.equal(readPage("?page=github.issue&number=12&repository=o%2Fr").key, readPage("?repository=o%2Fr&page=github.issue&number=12").key);
 		for (const bad of ["?page=github", "?page=GitHub.home", "?page=a.b.c", "?page=..%2Fx.home"]) assert.deepEqual([readPage(bad).package, readPage(bad).page], ["", ""], bad);
+	});
+
+	it("finds a page's title only among the pages the package declares", () => {
+		const extensions = [{ name: "github", entry: "", styles: [], cards: [], pages: { home: { title: "GitHub" } } }];
+		assert.equal(pageTitle(extensions, { package: "github", page: "home" }), "GitHub");
+		for (const page of ["constructor", "__proto__", "toString", "issue"]) assert.equal(pageTitle(extensions, { package: "github", page }), undefined, page);
+		assert.equal(pageTitle(extensions, { package: "other", page: "home" }), undefined);
+		assert.equal(pageTitle(undefined, { package: "github", page: "home" }), undefined);
 	});
 
 	it("makes page URLs within the package, keeping the session", () => {

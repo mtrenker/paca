@@ -34,6 +34,13 @@ describe("package operations", () => {
 			}),
 			slow: record("slow", (_input, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve("too late")))),
 			huge: record("huge", async () => ({ text: "x".repeat(512 * 1024) })),
+			// Not async: an operation may check its input and throw before it returns a promise.
+			sync_refuse: () => {
+				throw new OperationError(400, "Bad input.");
+			},
+			sync_crash: () => {
+				throw new Error("sync bug");
+			},
 		};
 		return {
 			id,
@@ -109,6 +116,25 @@ describe("package operations", () => {
 		assert.equal((await call(martin, "echo", "null")).status, 400);
 		assert.equal((await call(martin, "echo", "{")).status, 400);
 		assert.equal((await call(martin, "echo", { text: "x".repeat(16 * 1024) })).status, 413);
+	});
+
+	it("answers an operation that throws before returning a promise, and keeps serving", async () => {
+		const martin = await signIn("martin");
+		lines.length = 0;
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			assert.deepEqual(await answer(await call(martin, "sync_refuse")), [400, { error: "Bad input." }]);
+			assert.deepEqual(await answer(await call(martin, "sync_crash")), [500, { error: "Something went wrong on the server." }]);
+			// The response's close aborts the operation's signal; nothing may be left unhandled.
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.deepEqual(unhandled, []);
+			assert.deepEqual(await answer(await call(martin, "whoami")), [200, { user: "martin" }]);
+			assert.deepEqual(lines, ["paca: extension probe op sync_crash failed for user martin: sync bug"]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
 	});
 
 	it("shows an OperationError as given, hides a crash, and logs one line for a crash, a timeout or too much", async () => {
