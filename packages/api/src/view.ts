@@ -1,10 +1,11 @@
 // Reduces one session's Pi transcript to what the page shows. Every update sends the whole state,
 // so a client that reconnects simply starts from the latest one. Tool results stay on the server;
-// the page sees only which evidence was read and whether it was available.
-import type { DraftCard, PageState, Step, Turn } from "@paca/contracts";
+// the page sees only which evidence was read, whether it was available, and the bounded cards a
+// tool chose to show.
+import type { CardRef, DraftCard, PageState, Step, Turn } from "@paca/contracts";
 import type { ToolLabel } from "@paca/extension";
 import { NOTICE } from "./agent.ts";
-import type { StoredDraft } from "./store.ts";
+import type { StoredCard, StoredDraft } from "./store.ts";
 
 /** How the user's tool packages name their calls, and where to check an unknown write. */
 export interface Describe {
@@ -32,6 +33,8 @@ interface Message {
 export interface Entry {
 	readonly type: string;
 	readonly id: string;
+	/** When the entry was written (ISO 8601); places page drafts among the questions. */
+	readonly timestamp?: string;
 	readonly message?: unknown;
 	readonly customType?: string;
 	readonly content?: string | readonly Block[];
@@ -46,16 +49,20 @@ export interface Live {
 	/** Why the session could not be opened. */
 	error?: string;
 	drafts?: readonly StoredDraft[];
+	cards?: readonly StoredCard[];
 	describe?: Describe;
 }
 
 const NO_TOOLS: Describe = { labels: {}, checkUrl: () => undefined };
+/** The id prefix of drafts a page proposed (Contract 6); only that route writes it. */
+const PAGE_DRAFT = "page:";
 
 function draftCard(d: StoredDraft, describe: Describe): DraftCard {
 	const card: DraftCard = { id: d.id, action: d.action, target: d.repository, title: d.title, body: d.body, status: d.status };
 	if (d.url) Object.assign(card, { url: d.url, number: d.number });
 	if (d.error) card.error = d.error;
 	if (d.status === "unknown") card.checkUrl = describe.checkUrl(d);
+	if (d.id.startsWith(PAGE_DRAFT)) card.fromPage = true;
 	return card;
 }
 
@@ -74,7 +81,7 @@ function resultSummary(message: Message, label: ToolLabel | undefined): string {
 	return label?.detail?.(body) ?? "";
 }
 
-export function uiState(entries: readonly Entry[], { running = false, partial, retry, error, drafts = [], describe = NO_TOOLS }: Live = {}): PageState {
+export function uiState(entries: readonly Entry[], { running = false, partial, retry, error, drafts = [], cards = [], describe = NO_TOOLS }: Live = {}): PageState {
 	const toolLabel = (call: Block) => {
 		const label = describe.labels[call.name ?? ""];
 		return label ? label.label(call.arguments ?? {}) : `Refused tool ${call.name}`;
@@ -84,9 +91,11 @@ export function uiState(entries: readonly Entry[], { running = false, partial, r
 	const tools = new Map<string, Step>();
 	const nameOfCall = new Map<string, string>();
 	const turnOfCall = new Map<string, Turn>();
+	/** When each question was asked, by its turn. */
+	const askedAt = new Map<Turn, string>();
 	const current = () => {
 		if (!turn) {
-			turn = { id: "orphan", question: null, steps: [], answer: "", notices: [], drafts: [] };
+			turn = { id: "orphan", question: null, steps: [], answer: "", notices: [], drafts: [], cards: [] };
 			turns.push(turn);
 		}
 		return turn;
@@ -101,8 +110,9 @@ export function uiState(entries: readonly Entry[], { running = false, partial, r
 		const message = entry.message as Message;
 		switch (message.role) {
 			case "user":
-				turn = { id: entry.id, question: text(message.content), steps: [], answer: "", notices: [], drafts: [] };
+				turn = { id: entry.id, question: text(message.content), steps: [], answer: "", notices: [], drafts: [], cards: [] };
 				turns.push(turn);
+				if (entry.timestamp) askedAt.set(turn, entry.timestamp);
 				break;
 			case "assistant": {
 				const t = current();
@@ -148,14 +158,26 @@ export function uiState(entries: readonly Entry[], { running = false, partial, r
 	if (!running) for (const step of tools.values()) if (step.status === "running") step.status = "interrupted";
 
 	// A draft whose tool call is not in the transcript (a compacted legacy turn) is shown in one turn
-	// at the top, whatever its status, so a decision made there keeps its outcome and link.
+	// at the top, whatever its status, so a decision made there keeps its outcome and link. A draft a
+	// page proposed gets a turn of its own, before the first question asked after it.
 	const earlier: DraftCard[] = [];
 	for (const draft of drafts) {
 		const owner = turnOfCall.get(draft.id);
 		if (owner) owner.drafts.push(draftCard(draft, describe));
-		else earlier.push(draftCard(draft, describe));
+		else if (draft.id.startsWith(PAGE_DRAFT)) {
+			const page: Turn = { id: draft.id, question: null, steps: [], answer: "", notices: [], drafts: [draftCard(draft, describe)], cards: [] };
+			const after = turns.findIndex((t) => (askedAt.get(t) ?? "") > draft.createdAt);
+			turns.splice(after < 0 ? turns.length : after, 0, page);
+		} else earlier.push(draftCard(draft, describe));
 	}
-	if (earlier.length) turns.unshift({ id: "earlier-drafts", question: "Earlier drafts", steps: [], answer: "", notices: [], drafts: earlier });
+	if (earlier.length) turns.unshift({ id: "earlier-drafts", question: "Earlier drafts", steps: [], answer: "", notices: [], drafts: earlier, cards: [] });
+
+	// A card goes with its tool call's turn. One whose call is not in the branch is dropped: unlike a
+	// draft, it records no decision.
+	for (const card of cards) {
+		const ref: CardRef = { id: card.id, package: card.package, kind: card.kind, data: card.data, fallback: card.fallback, createdAt: card.createdAt };
+		turnOfCall.get(card.toolCallId)?.cards.push(ref);
+	}
 
 	return { running, turns };
 }

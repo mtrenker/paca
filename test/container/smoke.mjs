@@ -218,6 +218,21 @@ async function main() {
 		assert.equal(info.model, "fake/fake-model");
 		step("OIDC through the fake provider: other subject refused (403), allowed subject signed in");
 
+		// The GitHub package's frontend was built into the image and is served to this user only.
+		assert.deepEqual(info.extensions, [{ name: "github", entry: "/ext/github/dist/index.js", styles: ["/ext/github/github.css"], cards: ["issue"], pages: { home: { title: "GitHub" }, issue: { title: "Issue" } }, nav: { label: "GitHub", page: "home" } }]);
+		for (const [path, type] of [["/ext/github/dist/index.js", "text/javascript"], ["/ext/github/github.css", "text/css"]]) {
+			const asset = await fetch(`${first.base}${path}`, { headers: { cookie } });
+			assert.deepEqual([asset.status, asset.headers.get("content-type")], [200, type], path);
+			assert.equal(asset.headers.get("content-security-policy"), (await fetch(`${first.base}/healthz`)).headers.get("content-security-policy"));
+		}
+		assert.equal((await fetch(`${first.base}/ext/github/dist/index.js`)).status, 401);
+		assert.equal((await fetch(`${first.base}/ext/github/src/index.ts`, { headers: { cookie } })).status, 404);
+		// The GitHub pages' deep links load the page itself; the test-only Preact fixture is not in the image.
+		assert.equal((await fetch(`${first.base}/?page=github.issue&repository=example%2Frepo&number=1`, { headers: { cookie } })).status, 200);
+		assert.equal(await docker("exec", first.name, "find", "/app", "-path", "*extension-preact*", "-print", "-quit"), "");
+		assert.equal(await docker("exec", first.name, "find", "/app/node_modules", "-maxdepth", "1", "-name", "preact", "-print", "-quit"), "");
+		step("GitHub frontend listed with its nav entry; card assets served with the page's CSP (401 without a session, sources 404); deep links load; no fixture or Preact in the image");
+
 		const post = (path, body, origin = ORIGIN, csrf = info.csrf) =>
 			fetch(`${first.base}${path}`, { method: "POST", headers: { cookie, origin, "x-csrf-token": csrf, "content-type": "application/json" }, body: JSON.stringify(body) });
 		const start = { id: session, text: "Smoke question", requestId: `smoke-${run}` };
@@ -231,7 +246,18 @@ async function main() {
 		assert.equal(draft.status, "proposed");
 		const list = await waitFor(first.base, cookie, session, (event, value) => event === "sessions" && value.some((s) => s.id === session && s.waiting === 1 && !s.running));
 		assert.equal(list.length, 1);
+		// A page proposal with no open session makes a new session holding the draft. Nobody approves
+		// it, so nothing reaches GitHub; its retry under another new session id is a duplicate.
+		const pageSession = randomUUID();
+		const proposal = { requestId: `smoke-page-${run}`, package: "github", action: "create_issue", input: { repository: "example/repo", title: "Smoke follow-up", body: "Follow-up to example/repo#1." }, start: true };
+		const proposed = await post(`/api/sessions/${pageSession}/proposals`, proposal);
+		assert.deepEqual(await proposed.json(), { session: pageSession, draft: `page:smoke-page-${run}`, duplicate: false });
+		assert.deepEqual(await (await post(`/api/sessions/${randomUUID()}/proposals`, proposal)).json(), { session: pageSession, draft: `page:smoke-page-${run}`, duplicate: true });
+		const pageState = await waitFor(first.base, cookie, pageSession, (event, value) => event === "state" && value.turns.length === 1);
+		assert.deepEqual(pageState.turns[0].drafts.map((d) => [d.title, d.status, d.fromPage]), [["Smoke follow-up", "proposed", true]]);
+		assert.equal((await post(`/api/sessions/${pageSession}/delete`, {})).status, 200);
 		step("wrong Origin and CSRF refused (403), bad id (400), old route (410); a new session answered by the fake model with one proposed draft waiting");
+		step("a page proposal made a new session holding its draft, a retry under another session id was a duplicate, and the session was deleted unapproved");
 
 		await stopApp(first.name);
 		await docker("rm", first.name);

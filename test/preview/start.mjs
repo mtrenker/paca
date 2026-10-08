@@ -2,7 +2,11 @@
 // Starts the fake OIDC provider and model (test/container/fakes.mjs) and Paca in the foreground,
 // with data in .data/preview/, a fake gh, so approving a draft never reaches GitHub, and a fake
 // Herdr (test/container/fake-herdr.mjs) for the operator, so a sent prompt reaches no terminal.
-// Ctrl-C stops everything; the data stays for the next start. See CONTRIBUTING.md.
+// Ctrl-C stops everything; the data stays for the next start. PACA_PREVIEW_FRONTENDS=off turns the
+// GitHub package's frontend off (`disableFrontends`), with its own data in .data/preview-frontends-off/,
+// to show cards as fallback text. PACA_PREVIEW_PUBLIC_URL and PACA_PREVIEW_LOGIN_URL set the
+// origins a browser uses for Paca and the fake sign-in page, when an HTTPS proxy on another host
+// name forwards them to this machine; every listener stays on loopback. See CONTRIBUTING.md.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -15,7 +19,23 @@ const root = resolve(import.meta.dirname, "..", "..");
 const port = Number(process.env.PACA_PORT ?? 4402);
 const fakesPort = port + 1;
 const loginPort = port + 2;
-const dataDir = join(root, ".data", "preview");
+
+/** An origin from the environment: scheme, host and port only. Paca requires https, or http://localhost. */
+function origin(name, fallback, { httpLocalhost = false } = {}) {
+	const value = process.env[name];
+	if (!value) return fallback;
+	const url = URL.canParse(value) ? new URL(value) : undefined;
+	const local = httpLocalhost && url?.protocol === "http:" && url.hostname === "localhost";
+	if (!url || !(url.protocol === "https:" || local) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+		throw new Error(`${name} must be an origin such as https://<host>:<port>${httpLocalhost ? " (or http://localhost:<port>)" : ""}, without a path`);
+	}
+	return url.origin;
+}
+// Where the browser reaches Paca, and the fake sign-in page (an OIDC client requires it to be https).
+const publicUrl = origin("PACA_PREVIEW_PUBLIC_URL", `http://localhost:${port}`, { httpLocalhost: true });
+const loginOrigin = origin("PACA_PREVIEW_LOGIN_URL", `https://localhost:${loginPort}`);
+const frontendsOff = process.env.PACA_PREVIEW_FRONTENDS === "off";
+const dataDir = join(root, ".data", frontendsOff ? "preview-frontends-off" : "preview");
 const tlsDir = join(dataDir, "tls");
 // Unix socket paths are limited to about 100 bytes, too short for a path inside the checkout.
 const herdrDir = mkdtempSync(join(tmpdir(), "paca-preview-herdr-"));
@@ -40,11 +60,12 @@ if (!existsSync(join(tlsDir, "cert.pem"))) {
 }
 // Written on every start; the conversations in .data/preview/ are kept.
 const config = {
-	publicUrl: `http://localhost:${port}`,
+	publicUrl,
 	port,
 	oidc: { issuer, clientId: "paca-smoke" },
 	model: "fake/fake-model",
 	extensions: { "@paca/extension-github": { piClean: "/nonexistent/pi-clean" }, "@paca/extension-herdr": { socket: join(herdrDir, "herdr.sock") } },
+	...(frontendsOff ? { disableFrontends: ["@paca/extension-github"] } : {}),
 	users: USERS.map((u) => ({
 		id: u.id,
 		subject: u.sub,
@@ -62,7 +83,7 @@ const fakes = startFakes({
 	port: fakesPort,
 	host: "127.0.0.1",
 	tls: { key: readFileSync(join(tlsDir, "key.pem")), cert: readFileSync(join(tlsDir, "cert.pem")) },
-	login: { origin: `https://localhost:${loginPort}`, port: loginPort, users: USERS.map((u) => ({ sub: u.sub, username: u.username })) },
+	login: { origin: loginOrigin, port: loginPort, users: USERS.map((u) => ({ sub: u.sub, username: u.username })) },
 	modelDelayMs: 4000,
 });
 
@@ -82,9 +103,11 @@ const paca = spawn(process.execPath, [join(root, "packages", "api", "src", "main
 		...tokens,
 	},
 });
-console.log(`preview: open http://localhost:${port}/ and sign in as ${USERS.map((u) => u.id).join(" or ")}`);
+console.log(`preview: open ${publicUrl}/ and sign in as ${USERS.map((u) => u.id).join(" or ")}`);
 console.log("preview: martin also has a fake Herdr; ask him something about an agent to see a prompt card");
-console.log(`preview: the fake sign-in page on https://localhost:${loginPort} uses a throwaway certificate; accept the browser's warning once`);
+console.log(`preview: name an issue to see its card while the answer streams: ${USERS.map((u) => `${u.repository}#12 as ${u.id}`).join(", ")}`);
+if (frontendsOff) console.log("preview: the GitHub frontend is off here, so issue cards show their fallback text");
+console.log(`preview: the fake sign-in page is ${loginOrigin}, listening on https://localhost:${loginPort} with a throwaway certificate; on localhost, accept the browser's warning once`);
 const stop = () => paca.kill("SIGTERM");
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);

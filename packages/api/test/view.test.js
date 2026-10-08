@@ -80,4 +80,17 @@ describe("page state", () => {
 		assert.deepEqual([turn.steps[0].status, turn.steps[0].detail], ["unavailable", "Repository x/y is outside Paca's scope."]);
 		assert.deepEqual(turn.notices, [{ tone: "error", text: "The model request failed: 529 overloaded" }]);
 	});
+
+	it("gives each page draft its own turn, before the first question asked after it, never in Earlier drafts", () => {
+		const asked = (id, text, timestamp) => ({ ...user(id, text), timestamp });
+		const entries = [asked("1", "First", "2026-10-08T10:00:00.000Z"), toolCall("2", "d1"), asked("3", "Second", "2026-10-08T11:00:00.000Z")];
+		const page = (id, createdAt, extra) => draft(id, "proposed", { createdAt, ...extra });
+		const { turns } = uiState(entries, {
+			drafts: [draft("d1", "proposed"), page("page:early", "2026-10-08T09:00:00.000Z"), page("page:between", "2026-10-08T10:30:00.000Z"), page("page:late", "2026-10-08T12:00:00.000Z", { status: "created" }), draft("lost", "proposed")],
+		});
+		assert.deepEqual(turns.map((t) => [t.id, t.question]), [["earlier-drafts", "Earlier drafts"], ["page:early", null], ["1", "First"], ["page:between", null], ["3", "Second"], ["page:late", null]]);
+		assert.deepEqual(turns[0].drafts.map((d) => d.id), ["lost"]);
+		assert.deepEqual(turns.flatMap((t) => t.drafts).map((d) => [d.id, d.fromPage ?? false]), [["lost", false], ["page:early", true], ["d1", false], ["page:between", true], ["page:late", true]]);
+		assert.equal(turns[3].drafts[0].title, "Title page:between");
+	});
 });

@@ -6,17 +6,22 @@
   "engines": { "node": ">=24" },
   "workspaces": ["packages/*"],
   "scripts": {
-    "build": "tsc -p packages/web",
-    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web --noEmit",
+    "build": "tsc -p packages/web && tsc -p packages/extension-github/browser",
+    "build:fixture": "esbuild test/fixtures/extension-preact/browser/src/index.tsx --bundle --format=esm --jsx=automatic --jsx-import-source=preact --outfile=test/fixtures/extension-preact/browser/dist/index.js",
+    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web --noEmit && tsc -p packages/extension-github/browser --noEmit && tsc -p test/fixtures/extension-preact/browser",
     "prestart": "npm run build",
     "start": "node packages/api/src/main.ts",
     "ask": "node packages/api/src/ask.ts",
     "test": "node --test \"packages/*/test/*.test.js\"",
+    "test:browser": "npm run build && npm run build:fixture && node --test --test-timeout=60000 \"test/browser/*.test.mjs\"",
     "test:container": "node test/container/smoke.mjs",
     "preview": "node test/preview/start.mjs"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
+    "esbuild": "0.28.2",
+    "preact": "11.0.0",
+    "puppeteer-core": "25.12.0",
     "typescript": "7.0.2"
   },
   "overrides": {

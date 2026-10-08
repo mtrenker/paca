@@ -1,12 +1,47 @@
 #!/usr/bin/env node
 // Fake gh for the local preview: creating an issue answers with a made-up issue, and nothing reaches
 // GitHub. A draft whose body mentions "unknown" fails like a lost response (HTTP 502), so Paca
-// records an unknown outcome. Reads are not faked; they fail, and Paca shows them as unavailable.
+// records an unknown outcome. Reading one issue, and searching or listing the issues of the
+// repositories asked for, answer with synthetic issues 1 to 24 (every third one closed); other
+// reads are not faked, they fail, and Paca shows them as unavailable.
 import { readFileSync } from "node:fs";
 
 const [command, ...rest] = process.argv.slice(2);
 const target = rest.find((a) => /^repos\/[\w.-]+\/[\w.-]+\/issues$/.test(a));
-if (command === "api" && rest.includes("POST") && target) {
+const TITLES = ["Tidy the preview notes", "Card focus survives streaming", "Search the synthetic issues", "Phone layout for issue pages", "Keyboard path through the pages", "Fallback text when frontends are off", "Deep links survive a refresh", "Label chips wrap on narrow screens"];
+const hours = (n) => new Date(Date.now() - n * 3_600_000).toISOString();
+/** Synthetic issue `number` of `repository`; the lower the number, the more recently updated. */
+const issueOf = (repository, number) => ({
+	repository: { nameWithOwner: repository },
+	number,
+	title: `${TITLES[(number - 1) % TITLES.length]} (${number})`,
+	state: number % 3 === 0 ? "CLOSED" : "OPEN",
+	url: `https://github.com/${repository}/issues/${number}`,
+	labels: [{ name: "preview" }, { name: "synthetic" }, ...(number % 2 ? [{ name: "bug" }] : [])],
+	updatedAt: hours(number * 5),
+});
+const flag = (name) => rest.flatMap((a, i) => (a === name ? [rest[i + 1]] : []));
+if (command === "issue" && rest[0] === "view" && /^\d+$/.test(rest[1]) && rest[2] === "--repo") {
+	const [number, repository] = [Number(rest[1]), rest[3]];
+	const { repository: _, ...issue } = issueOf(repository, number);
+	console.log(JSON.stringify({
+		...issue,
+		author: { login: "preview-bot" },
+		assignees: [],
+		milestone: null,
+		createdAt: hours(number * 5 + 200),
+		body: `Made up by the preview's fake gh for ${repository}#${number}. Nothing here came from GitHub.\n\nA second paragraph, so the page shows line breaks.`,
+		comments: [{ author: { login: "preview-bot" }, createdAt: hours(number * 5), body: "A synthetic comment." }],
+	}));
+} else if (command === "search" && rest[0] === "issues") {
+	const query = rest[1] && !rest[1].startsWith("--") ? rest[1].toLowerCase() : undefined;
+	const limit = Number(flag("--limit")[0] ?? 30);
+	const all = flag("--repo").flatMap((repository) => Array.from({ length: 24 }, (_, i) => issueOf(repository, i + 1)));
+	const found = query
+		? all.filter((i) => query.split(/\s+/).every((word) => i.title.toLowerCase().includes(word)))
+		: all.filter((i) => i.state === "OPEN").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+	console.log(JSON.stringify(found.slice(0, limit)));
+} else if (command === "api" && rest.includes("POST") && target) {
 	const { title, body } = JSON.parse(readFileSync(0, "utf8"));
 	if (/unknown/i.test(body)) {
 		console.error("fake gh: gh: Bad Gateway (HTTP 502)");

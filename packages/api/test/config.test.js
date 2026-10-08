@@ -91,4 +91,13 @@ describe("users", () => {
 		await assert.rejects(load({ ...USERS, users, oidc: CONFIG.oidc }), /not both/);
 		await assert.rejects(load({ ...USERS, users, extensions: { "./local.ts": {} } }), /not an npm package name/);
 	});
+
+	it("turns frontends off only for enabled packages", async () => {
+		const users = [{ id: "martin", subject: "s1", operator: true, github }];
+		assert.deepEqual((await load({ ...USERS, users })).disableFrontends, []);
+		assert.deepEqual((await load({ ...USERS, users, disableFrontends: ["@paca/extension-github"] })).disableFrontends, ["@paca/extension-github"]);
+		await assert.rejects(load({ ...USERS, users, disableFrontends: ["@paca/extension-herdr"] }), /disableFrontends must list packages enabled under extensions/);
+		await assert.rejects(load({ ...USERS, users, disableFrontends: "@paca/extension-github" }), /disableFrontends/);
+		assert.deepEqual((await load({ ...CONFIG, disableFrontends: ["@paca/extension-github"] })).disableFrontends, ["@paca/extension-github"]);
+	});
 });

@@ -11,3 +11,7 @@ packages/*/*
 !packages/*/src/
 !packages/web/public/
 !packages/web/tsconfig.json
+!packages/extension/browser/
+!packages/extension-github/browser/
+# Built in the image's web stage, never taken from the checkout.
+packages/*/browser/dist/

@@ -1,0 +1,5 @@
+{
+  "name": "@paca-test/extension-preact",
+  "private": true,
+  "type": "module"
+}

@@ -1,5 +1,6 @@
-// One user's Paca store, users/<id>/paca.db: the session list, deletion state, request ids and
-// drafts. Transcripts live in one Pi session file per session (sessions/<time>_<id>.jsonl).
+// One user's Paca store, users/<id>/paca.db: the session list, deletion state, request ids,
+// drafts and cards. Transcripts live in one Pi session file per session
+// (sessions/<time>_<id>.jsonl).
 //
 // node:sqlite is synchronous, so every method below runs to completion without an await. The
 // rules that keep a write from being sent twice or lost are single statements here:
@@ -44,6 +45,18 @@ export interface StoredDraft {
 	error?: string;
 }
 
+/** A card a tool showed, stored as validated (cards.ts). `data` and `fallback` are JSON. */
+export interface StoredCard {
+	id: string;
+	sessionId: string;
+	toolCallId: string;
+	package: string;
+	kind: string;
+	data: Record<string, unknown>;
+	fallback: { text: string; url?: string };
+	createdAt: string;
+}
+
 export type Store = ReturnType<typeof openStore>;
 
 const SCHEMA = `
@@ -75,6 +88,17 @@ CREATE TABLE IF NOT EXISTS drafts (
 	number INTEGER,
 	url TEXT,
 	error TEXT,
+	PRIMARY KEY (session_id, id)
+);
+CREATE TABLE IF NOT EXISTS cards (
+	session_id TEXT NOT NULL,
+	id TEXT NOT NULL,
+	tool_call_id TEXT NOT NULL,
+	package TEXT NOT NULL,
+	kind TEXT NOT NULL,
+	data TEXT NOT NULL,
+	fallback TEXT NOT NULL,
+	created_at TEXT NOT NULL,
 	PRIMARY KEY (session_id, id)
 );
 `;
@@ -109,6 +133,23 @@ function draftOf(r: Row): StoredDraft {
 	if (r.url !== null) draft.url = String(r.url);
 	if (r.error !== null) draft.error = String(r.error);
 	return draft;
+}
+
+const cardOf = (r: Row): StoredCard => ({
+	id: String(r.id),
+	sessionId: String(r.session_id),
+	toolCallId: String(r.tool_call_id),
+	package: String(r.package),
+	kind: String(r.kind),
+	data: JSON.parse(String(r.data)),
+	fallback: JSON.parse(String(r.fallback)),
+	createdAt: String(r.created_at),
+});
+
+/** Whether two `expect` maps hold the same facts, whatever their key order. */
+function sameExpect(a: Record<string, string> | undefined, b: Readonly<Record<string, string>> | undefined) {
+	const canonical = (e: Readonly<Record<string, string>> | undefined) => JSON.stringify(Object.entries(e ?? {}).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+	return canonical(a) === canonical(b);
 }
 
 export function openStore(file: string) {
@@ -181,8 +222,58 @@ export function openStore(file: string) {
 			const row = one("SELECT * FROM drafts WHERE session_id = ? AND id = ?", sessionId, id);
 			return row && draftOf(row);
 		},
+		/**
+		 * Admits a page's proposal as the draft `page:<requestId>`, in one transaction (see
+		 * docs/design/frontend-extensions.md and #17, Contract 6). The request id is looked up across
+		 * every session first, so a retry that names another new session finds the draft it stored.
+		 * Otherwise the draft goes into `sessionId` while it is active, or, with `create`, into a new
+		 * session row made in the same transaction.
+		 */
+		admitPageDraft(
+			sessionId: string,
+			draft: Omit<StoredDraft, "sessionId" | "status" | "createdAt">,
+			create?: { file: string; title: string },
+		): { result: "inserted" | "created" | "duplicate"; sessionId: string } | { result: "conflict" | "deleting" | "not-found" } {
+			return transaction(() => {
+				const found = one("SELECT d.*, s.state AS session_state FROM drafts d LEFT JOIN sessions s ON s.id = d.session_id WHERE d.id = ? ORDER BY d.created_at LIMIT 1", draft.id);
+				if (found) {
+					if (found.session_state !== "active") return { result: "deleting" as const };
+					const stored = draftOf(found);
+					const same = stored.action === draft.action && stored.repository === draft.repository && stored.title === draft.title && stored.body === draft.body && sameExpect(stored.expect, draft.expect);
+					return same ? { result: "duplicate" as const, sessionId: stored.sessionId } : { result: "conflict" as const };
+				}
+				const row = one("SELECT state FROM sessions WHERE id = ?", sessionId);
+				if (row?.state === "deleting") return { result: "deleting" as const };
+				const at = now();
+				if (!row) {
+					if (!create) return { result: "not-found" as const };
+					run("INSERT INTO sessions (id, file, title, created_at, last_activity) VALUES (?, ?, ?, ?, ?)", sessionId, create.file, create.title, at, at);
+				} else {
+					run("UPDATE sessions SET last_activity = ? WHERE id = ?", at, sessionId);
+				}
+				insertDraft({ ...draft, sessionId, status: "proposed", createdAt: at });
+				return { result: row ? ("inserted" as const) : ("created" as const), sessionId };
+			});
+		},
 		/** Stores a proposal. A replayed tool call finds its draft instead of making another. */
 		propose: (draft: Omit<StoredDraft, "status" | "createdAt">) => void insertDraft({ ...draft, status: "proposed", createdAt: now() }),
+		/**
+		 * Stores a card as "<tool call id>:<n>", n counting the call's cards from 0. Rows are never
+		 * updated. False when the call already has `max` cards. Nothing is stored for a session that
+		 * is not active, so a delete never leaves a card behind.
+		 */
+		addCard(card: { sessionId: string; toolCallId: string; package: string; kind: string; data: string; fallback: string }, max: number): boolean {
+			return transaction(() => {
+				const n = Number(one("SELECT count(*) AS n FROM cards WHERE session_id = ? AND tool_call_id = ?", card.sessionId, card.toolCallId)!.n);
+				if (n >= max) return false;
+				run(
+					"INSERT INTO cards (session_id, id, tool_call_id, package, kind, data, fallback, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ? AND state = 'active')",
+					card.sessionId, `${card.toolCallId}:${n}`, card.toolCallId, card.package, card.kind, card.data, card.fallback, now(), card.sessionId,
+				);
+				return true;
+			});
+		},
+		cards: (sessionId: string) => all("SELECT * FROM cards WHERE session_id = ? ORDER BY rowid", sessionId).map(cardOf),
 		/**
 		 * Claims a proposed draft for its one write (proposed -> creating), only while its session is
 		 * active. A repeated or concurrent approval, or a delete marked first, makes this return false.
@@ -219,6 +310,7 @@ export function openStore(file: string) {
 				if (!one("SELECT 1 FROM sessions WHERE id = ? AND state = 'deleting'", id)) return;
 				run("DELETE FROM requests WHERE session_id = ?", id);
 				run("DELETE FROM drafts WHERE session_id = ?", id);
+				run("DELETE FROM cards WHERE session_id = ?", id);
 				run("DELETE FROM sessions WHERE id = ? AND state = 'deleting'", id);
 			});
 		},

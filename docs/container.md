@@ -226,9 +226,14 @@ throwaway certificate and data. It checks:
 - the container runs as uid 1000 and the image's health check passes;
 - without a session, `/` redirects to sign-in and the chat and draft endpoints answer 401;
 - another subject is refused, the allowed one signs in;
+- after sign-in the session lists the GitHub package's frontend with its nav entry, its module
+  and stylesheet are served with the page's CSP (401 without a session, sources 404), a page's
+  deep link loads, and neither the test-only Preact fixture nor Preact is in the image;
 - a wrong `Origin` or CSRF token is refused;
 - a question starts a session and gets an answer with one proposed draft; the session list
   shows it with one draft waiting;
+- a page proposal with no open session makes a new session holding its draft, a retry naming
+  another session id finds the same draft, and the session is deleted without approving it;
 - `docker stop` exits 0 within the grace period, and the secrets never appear in the logs;
 - a new container on the same volume keeps the session key, the session and the draft;
 - with a users config and a fake Herdr socket mounted read-only, the operator's question in a new
@@ -265,6 +270,9 @@ docker --config "$(mktemp -d)" pull ghcr.io/mtrenker/paca:latest
 
 ## Design choices
 
+- **Browser code:** the `web` stage compiles the page and the GitHub package's card module
+  (`packages/extension-github/browser/dist/`); the final stage copies both. A `browser/dist/`
+  built in the checkout is never part of the build context.
 - **Base image:** `node:24.21.0-trixie-slim`, pinned by digest. Node 24 is what Paca requires.
   Debian slim has the glibc that `gh` and Pi's dependencies expect.
 - **Downloads:** `gh` 2.102.0, `tini` 0.19.0 and the collector are downloaded at build time and

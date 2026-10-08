@@ -9,8 +9,9 @@ import { join, relative } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { type AgentSession, type ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { DraftStatus, PageState, SessionSummary } from "@paca/contracts";
-import type { Proposal, Propose, UserTools, WriteAction, WriteOutcome } from "@paca/extension";
+import { OperationError, type Proposal, type Propose, type Show, type UserTools, type WriteAction, type WriteOutcome } from "@paca/extension";
 import { interrupted, LIMITS, type Limits, NOTICE, openAgent, type PackageTools, type Run } from "./agent.ts";
+import { CARDS_PER_CALL, checkCard } from "./cards.ts";
 import { createFeed, type Feed } from "./feed.ts";
 import type { Store, StoredDraft } from "./store.ts";
 import { type Describe, uiState } from "./view.ts";
@@ -25,8 +26,11 @@ export interface SessionsOptions {
 	store: Store;
 	modelRuntime: ModelRuntime;
 	model: Model<any>;
-	/** The user's package tools, given the `propose` that stores a package's drafts in this store. */
-	tools: (proposeFor: (packageName: string) => Propose) => PackageTools[];
+	/**
+	 * The user's package tools, given the `propose` that stores a package's drafts in this store and
+	 * the `show` that stores its cards of the kinds its manifest declares.
+	 */
+	tools: (proposeFor: (packageName: string) => Propose, showFor: (packageName: string, kinds: readonly string[]) => Show) => PackageTools[];
 	limits?: Limits;
 	/** Removes one file; a missing file counts as removed. Tests hold or fail it. */
 	removeFile?: (path: string) => Promise<void>;
@@ -48,9 +52,32 @@ interface Live {
 }
 
 export type Refused<R extends string> = { refused: R };
+
+/** A page's proposal as the route received it. `label` names a new session: the nav label or package name. */
+export interface PageProposal {
+	requestId: string;
+	package: string;
+	action: string;
+	input: Record<string, unknown>;
+	start: boolean;
+	label: string;
+}
+
+/** A page proposal's built content: plain strings, at most this many bytes as JSON. */
+const PAGE_PROPOSAL_MAX = 128 * 1024;
 export type Sessions = Awaited<ReturnType<typeof openSessions>>;
 
 const removeIfPresent = (path: string) => rm(path, { force: true });
+
+/** Why a builder's result cannot be stored, or undefined: plain strings, the asked action, bounded. */
+function checkProposal(proposal: Proposal, action: string): string | undefined {
+	if (typeof proposal !== "object" || proposal === null) return "the builder returned no proposal";
+	if (proposal.action !== action) return `the builder returned a proposal for ${JSON.stringify(proposal.action)}, not ${action}`;
+	for (const key of ["target", "title", "body"] as const) if (typeof proposal[key] !== "string") return `the proposal's ${key} is not a string`;
+	if (proposal.expect !== undefined && (typeof proposal.expect !== "object" || proposal.expect === null || !Object.values(proposal.expect).every((v) => typeof v === "string"))) return "the proposal's expect holds values that are not strings";
+	if (Buffer.byteLength(JSON.stringify(proposal)) > PAGE_PROPOSAL_MAX) return `the proposal is over ${PAGE_PROPOSAL_MAX} bytes`;
+	return undefined;
+}
 
 export async function openSessions({ userDir, store, modelRuntime, model, tools: toolsOf, limits = LIMITS, removeFile = removeIfPresent, log = console }: SessionsOptions) {
 	const sessionsDir = join(userDir, "sessions");
@@ -66,7 +93,14 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 		store.propose({ id: toolCallId, sessionId, action: `${packageName}.${proposal.action}`, repository: proposal.target, title: proposal.title, body: proposal.body, ...(proposal.expect ? { expect: { ...proposal.expect } } : {}) });
 		changed(sessionId);
 	};
-	const packages = toolsOf(proposeFor);
+	// Cards likewise; one outside the bounds throws, and the tool call fails (cards.ts).
+	const showFor = (packageName: string, kinds: readonly string[]): Show => (toolCallId, ctx, card) => {
+		const checked = checkCard(card, kinds);
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (!store.addCard({ sessionId, toolCallId, package: packageName, ...checked }, CARDS_PER_CALL)) throw new Error(`card refused: a tool call shows at most ${CARDS_PER_CALL} cards`);
+		changed(sessionId);
+	};
+	const packages = toolsOf(proposeFor, showFor);
 	const writes = new Map<string, WriteAction>();
 	for (const p of packages) for (const [name, action] of Object.entries(p.tools.writes ?? {})) writes.set(`${p.name}.${name}`, action);
 	const proposalOf = (d: StoredDraft): Proposal => ({ action: d.action, target: d.repository, title: d.title, body: d.body, ...(d.expect ? { expect: d.expect } : {}) });
@@ -84,7 +118,7 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 			const created: Live = {
 				busy: false,
 				feed: createFeed(() =>
-					uiState(created.session?.sessionManager.getBranch() ?? [], { running: created.busy, partial: created.session?.state.streamingMessage, retry: created.retry, error: created.error, drafts: store.drafts(id), describe }),
+					uiState(created.session?.sessionManager.getBranch() ?? [], { running: created.busy, partial: created.session?.state.streamingMessage, retry: created.retry, error: created.error, drafts: store.drafts(id), cards: store.cards(id), describe }),
 				),
 			};
 			live = created;
@@ -278,6 +312,36 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 			}
 			await finishDelete(id);
 			return { deleted: true };
+		},
+		/**
+		 * Stores a page's exact proposal as a draft for approval, without the model (#17, Contract 6).
+		 * Only an action whose package declares both a builder and a write can be proposed. The
+		 * builder runs first; admission is then one synchronous transaction (store.admitPageDraft), so
+		 * a retry, a concurrent request or a delete either finds the stored draft or is refused. A
+		 * session made here has no file or AgentSession until it is opened, like a start's.
+		 */
+		async proposeFromPage(id: string, request: PageProposal): Promise<{ session: string; draft: string; duplicate: boolean } | Refused<"not-proposable" | "not-found" | "deleting" | "conflict"> | { refused: "operation"; status: number; error: string } | { refused: "failed"; error: string }> {
+			const tools = packages.find((p) => p.name === request.package)?.tools;
+			const builder = tools?.proposals && Object.hasOwn(tools.proposals, request.action) ? tools.proposals[request.action] : undefined;
+			if (!builder || !tools?.writes || !Object.hasOwn(tools.writes, request.action)) return { refused: "not-proposable" };
+			let proposal: Proposal;
+			try {
+				proposal = await builder(request.input);
+			} catch (error) {
+				if (error instanceof OperationError && [400, 404, 409, 502].includes(error.status)) return { refused: "operation", status: error.status, error: error.message };
+				return { refused: "failed", error: String((error as Error)?.message ?? error) };
+			}
+			const problem = checkProposal(proposal, request.action);
+			if (problem) return { refused: "failed", error: problem };
+			const draft = { id: `page:${request.requestId}`, action: `${request.package}.${request.action}`, repository: proposal.target, title: proposal.title, body: proposal.body, ...(proposal.expect ? { expect: { ...proposal.expect } } : {}) };
+			// The row decides in the transaction; the manager is made only for a start, and kept only if it was used.
+			const manager = request.start && !store.session(id) ? SessionManager.create(piDir, sessionsDir, { id }) : undefined;
+			const create = manager ? { file: relative(userDir, manager.getSessionFile()!), title: `${request.label}: ${proposal.title}`.slice(0, TITLE_MAX) } : undefined;
+			const admitted = store.admitPageDraft(id, draft, create);
+			if (!("sessionId" in admitted)) return { refused: admitted.result };
+			if (admitted.result === "created" && manager) liveOf(id).created = manager;
+			changed(admitted.sessionId);
+			return { session: admitted.sessionId, draft: draft.id, duplicate: admitted.result === "duplicate" };
 		},
 		/** Performs the stored draft with its package's write action, once. */
 		async approveDraft(id: string, draftId: string): Promise<{ status: DraftStatus; url?: string } | Refused<string>> {
