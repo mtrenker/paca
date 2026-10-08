@@ -89,7 +89,19 @@ function checkManifest(module: string, manifest: BrowserManifest, root: string) 
 	if (!Array.isArray(styles) || !styles.every((s) => isFile(s, ".css"))) fail("styles must be .css files inside dir");
 	const cards = manifest.cards ?? [];
 	if (!Array.isArray(cards) || !cards.every((k) => typeof k === "string" && NAME.test(k)) || new Set(cards).size !== cards.length) fail("cards must be distinct names of lowercase letters, digits and dashes");
-	return { dir, entry: manifest.entry, styles: [...styles], cards: [...cards] };
+	const pages: Record<string, { title: string }> = {};
+	if (manifest.pages !== undefined && (typeof manifest.pages !== "object" || manifest.pages === null || Array.isArray(manifest.pages))) fail("pages must map page names to { title }");
+	for (const [page, value] of Object.entries(manifest.pages ?? {})) {
+		if (!NAME.test(page)) fail(`page ${JSON.stringify(page)} must be lowercase letters, digits and dashes`);
+		if (typeof value?.title !== "string" || !value.title.trim() || value.title.length > 60) fail(`page ${page} needs a title of 1 to 60 characters`);
+		pages[page] = { title: value.title };
+	}
+	const nav = manifest.nav;
+	if (nav !== undefined) {
+		if (typeof nav?.page !== "string" || !Object.hasOwn(pages, nav.page)) fail("nav.page must be a declared page");
+		if (typeof nav.label !== "string" || !nav.label.trim() || nav.label.length > 24) fail("nav.label must have 1 to 24 characters");
+	}
+	return { dir, entry: manifest.entry, styles: [...styles], cards: [...cards], pages, ...(nav ? { nav: { label: nav.label, page: nav.page } } : {}) };
 }
 
 /** The frontend with its file map, or undefined (logged once) when its built files are missing. */
@@ -122,5 +134,7 @@ function frontendOf(module: string, name: string, manifest: ReturnType<typeof ch
 		return undefined;
 	}
 	const url = (file: string) => `/ext/${name}/${file}`;
-	return { info: { name, entry: url(manifest.entry), styles: manifest.styles.map(url), cards: manifest.cards }, files };
+	const info: ExtensionInfo = { name, entry: url(manifest.entry), styles: manifest.styles.map(url), cards: manifest.cards, pages: manifest.pages };
+	if (manifest.nav) info.nav = manifest.nav;
+	return { info, files };
 }

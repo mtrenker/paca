@@ -22,6 +22,10 @@ export interface ExtensionInfo {
 	styles: string[];
 	/** The card kinds it renders. */
 	cards: string[];
+	/** Its pages by name, opened as /?page=<name>.<page>. */
+	pages: Record<string, { title: string }>;
+	/** Its one link in the side list. */
+	nav?: { label: string; page: string };
 }
 
 export type StepStatus = "running" | "done" | "unavailable" | "interrupted";

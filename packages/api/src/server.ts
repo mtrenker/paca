@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import type { PageState, SessionInfo, SessionSummary } from "@paca/contracts";
+import { type Operation, OperationError } from "@paca/extension";
 import type { Oidc, Session, Sessions } from "./auth.ts";
 import type { Frontend } from "./extensions.ts";
 import type { Feed } from "./feed.ts";
@@ -21,6 +22,9 @@ const SECURITY_HEADERS = {
 const STATIC: Record<string, ["public" | "script", string]> = { "/app.js": ["script", "text/javascript"], "/mounts.js": ["script", "text/javascript"], "/style.css": ["public", "text/css"], "/icon.svg": ["public", "image/svg+xml"] };
 /** A package's frontend file: /ext/<package name>/<path listed at start>. */
 const EXT_ASSET = /^\/ext\/([a-z][a-z0-9-]*)\/(.+)$/;
+/** A package's read for its pages and cards: POST /api/ext/<package name>/<operation>. */
+const EXT_OPERATION = /^\/api\/ext\/([a-z][a-z0-9-]*)\/([a-z][a-z0-9_-]*)$/;
+const OPERATION_MAX = 512 * 1024;
 const MAX_BODY = 16 * 1024;
 const MAX_QUESTION = 4000;
 const SESSION_ROUTE = /^\/api\/sessions\/([^/]+)\/(messages|stop|delete|drafts\/approve|drafts\/dismiss)$/;
@@ -45,6 +49,10 @@ export interface RouteUser {
 		watch(id: string): Promise<Feed<PageState> | undefined>;
 	};
 	info: Omit<SessionInfo, "csrf" | "name">;
+	/** The user's id, for log lines. */
+	id: string;
+	/** One of the user's package operations; the route checks the frontend is on first. */
+	operation?(packageName: string, op: string): Operation | undefined;
 }
 
 /** How each refusal reads to the page. */
@@ -67,10 +75,12 @@ export interface AppDeps {
 	web: { public: string; script: string };
 	/** Each package's frontend that is on, by package name (extensions.ts). */
 	frontends?: ReadonlyMap<string, Frontend>;
+	/** How long an operation may take before it is aborted and answers 504. */
+	operationTimeoutMs?: number;
 	log?: Pick<Console, "warn" | "error">;
 }
 
-export function createApp({ config, sessions, oidc, users, web, frontends = new Map(), log = console }: AppDeps) {
+export function createApp({ config, sessions, oidc, users, web, frontends = new Map(), operationTimeoutMs = 25_000, log = console }: AppDeps) {
 	type Res = ServerResponse;
 	const send = (res: Res, status: number, body: string | Buffer, headers: Record<string, string | string[]> = {}) => {
 		res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
@@ -126,6 +136,39 @@ export function createApp({ config, sessions, oidc, users, web, frontends = new 
 			clearInterval(heartbeat);
 			for (const fn of unsubscribe) fn();
 		});
+	}
+
+	/**
+	 * Runs one of the user's package operations with a time limit and a size cap. Only the API's
+	 * `error` reaches the page; a crash is logged with the user, never shown.
+	 */
+	async function operate(res: Res, user: RouteUser, name: string, opName: string, op: Operation, input: Record<string, unknown>) {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), operationTimeoutMs);
+		// A page that goes away stops waiting; the operation is told through the same signal.
+		res.on("close", () => controller.abort());
+		const aborted = new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true }));
+		const where = `extension ${name} op ${opName}`;
+		try {
+			const value = await Promise.race([op(input, controller.signal), aborted]);
+			const text = JSON.stringify(value ?? null);
+			if (Buffer.byteLength(text) > OPERATION_MAX) {
+				log.warn(`paca: ${where} answered ${Buffer.byteLength(text)} bytes for user ${user.id}`);
+				return json(res, 502, { error: "The extension answered too much." });
+			}
+			return send(res, 200, text, { "Content-Type": "application/json" });
+		} catch (error) {
+			if (res.destroyed) return;
+			if (error instanceof OperationError && [400, 404, 409, 502].includes(error.status)) return json(res, error.status, { error: error.message });
+			if (controller.signal.aborted) {
+				log.warn(`paca: ${where} took longer than ${operationTimeoutMs / 1000} s for user ${user.id}`);
+				return json(res, 504, { error: "The extension took too long. Try again." });
+			}
+			log.error(`paca: ${where} failed for user ${user.id}: ${(error as Error)?.message ?? error}`);
+			return json(res, 500, { error: "Something went wrong on the server." });
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	const reply = (res: Res, result: Result, status = 200) => {
@@ -201,6 +244,15 @@ export function createApp({ config, sessions, oidc, users, web, frontends = new 
 			if (refused) return json(res, 403, { error: `Request refused (${refused}). Reload the page.` });
 		}
 		if (OLD_ROUTES.has(route)) return json(res, 410, { error: "Paca was updated. Reload the page." });
+		const extOp = req.method === "POST" ? EXT_OPERATION.exec(url.pathname) : null;
+		if (extOp) {
+			// Only a package this user's page lists (tools for them, frontend on) has operations here.
+			const op = user.info.extensions?.some((e) => e.name === extOp[1]) ? user.operation?.(extOp[1], extOp[2]) : undefined;
+			if (!op) return json(res, 404, { error: "Not found." });
+			const input = await body(req);
+			if (typeof input !== "object" || input === null || Array.isArray(input)) return json(res, 400, { error: "The request must be a JSON object." });
+			return operate(res, user, extOp[1], extOp[2], op, input);
+		}
 		if (route === "POST /api/sessions") {
 			const fields = await body(req);
 			const asked = question(fields);

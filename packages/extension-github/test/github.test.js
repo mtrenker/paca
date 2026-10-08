@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { childEnv, createGitHub, EvidenceUnavailable, formatOverview, WriteRejected, WriteUnknown } from "../src/github.ts";
+import { OperationError } from "@paca/extension";
 import github_, { githubTools, issueCard } from "../src/index.ts";
 
 const projects = [
@@ -140,9 +141,69 @@ describe("issue card", () => {
 		assert.match((await readIssue.execute("call_1", { repository: "o/api", number: 12 })).content[0].text, /^o\/api#12 \[open\] Fix the thing/);
 	});
 
-	it("declares its card in the manifest, with its browser files in the package", () => {
-		assert.deepEqual({ ...github_.browser, dir: undefined }, { dir: undefined, entry: "dist/index.js", styles: ["github.css"], cards: ["issue"] });
+	it("declares its card, pages and nav entry in the manifest, with its browser files in the package", () => {
+		assert.deepEqual({ ...github_.browser, dir: undefined }, {
+			dir: undefined,
+			entry: "dist/index.js",
+			styles: ["github.css"],
+			cards: ["issue"],
+			pages: { home: { title: "GitHub" }, issue: { title: "Issue" } },
+			nav: { label: "GitHub", page: "home" },
+		});
 		assert.match(github_.browser.dir, /^file:.*\/extension-github\/browser\/$/);
+	});
+});
+
+describe("operations for the GitHub pages", () => {
+	const ops = async (run) => {
+		const { gh, calls } = await github(run);
+		return { ...githubTools(gh, () => {}).operations, calls };
+	};
+	const refused = (status, message) => (error) => error instanceof OperationError && error.status === status && message.test(error.message);
+
+	it("refuses repositories outside the scope, bad numbers and qualifiers without running gh", async () => {
+		const { issue, issues, calls } = await ops(() => "[]");
+		await assert.rejects(issue({ repository: "someone/else", number: 1 }), refused(404, /not in your GitHub scope/));
+		await assert.rejects(issue({ repository: "o/api", number: 0 }), refused(400, /positive whole number/));
+		await assert.rejects(issue({ repository: "o/api", number: "1; rm" }), refused(400, /positive whole number/));
+		await assert.rejects(issues({ repository: "someone/else" }), refused(404, /not in your GitHub scope/));
+		await assert.rejects(issues({ query: "repo:someone/else x" }), refused(400, /Choose a repository/));
+		await assert.rejects(issues({ query: "x".repeat(201) }), refused(400, /at most 200/));
+		assert.equal(calls.length, 0);
+	});
+
+	it("reads one issue fresh, within its bounds: body 20,000 characters, the last 10 comments of 4,000", async () => {
+		const comments = Array.from({ length: 15 }, (_, i) => ({ author: { login: `c${i}` }, createdAt: "2026-10-01T00:00:00Z", body: "y".repeat(5000) }));
+		const { issue } = await ops(() => JSON.stringify({ number: 12, title: "T", state: "CLOSED", author: { login: "a" }, labels: [{ name: "bug" }], updatedAt: "2026-10-07T00:00:00Z", body: "x".repeat(25_000), comments }));
+		const read = await issue({ repository: "O/API", number: "12" });
+		assert.deepEqual([read.repository, read.number, read.state, read.url, read.author, read.labels], ["o/api", 12, "closed", "https://github.com/o/api/issues/12", "a", ["bug"]]);
+		assert.equal(read.body.length, 20_000);
+		assert.deepEqual(read.comments.map((c) => c.author), ["c5", "c6", "c7", "c8", "c9", "c10", "c11", "c12", "c13", "c14"]);
+		assert.ok(read.comments.every((c) => c.body.length === 4000));
+	});
+
+	it("lists recent open issues without a query, and searches with one, dropping results outside the scope", async () => {
+		const found = [
+			{ repository: { nameWithOwner: "o/web" }, number: 3, title: "In scope", state: "OPEN", updatedAt: "2026-10-07T00:00:00Z", labels: Array.from({ length: 8 }, (_, i) => ({ name: `l${i}` })) },
+			{ repository: { nameWithOwner: "x/secret" }, number: 4, title: "Leak", state: "OPEN", labels: [] },
+		];
+		const { issues, calls } = await ops(() => JSON.stringify(found));
+		const recent = await issues({});
+		assert.deepEqual(recent.repositories, ["o/api", "o/web"]);
+		assert.deepEqual(recent.results, [{ repository: "o/web", number: 3, title: "In scope", state: "open", updatedAt: "2026-10-07T00:00:00Z", labels: ["l0", "l1", "l2", "l3", "l4"] }]);
+		assert.deepEqual(calls[0], ["gh", "search", "issues", "--state", "open", "--sort", "updated", "--order", "desc", "--limit", "20", "--json", "repository,number,title,state,url,updatedAt,labels", "--repo", "o/api", "--repo", "o/web"]);
+		await issues({ query: "  focus  ", repository: "o/web" });
+		assert.deepEqual(calls[1], ["gh", "search", "issues", "focus", "--limit", "30", "--json", "repository,number,title,state,url,updatedAt,labels", "--repo", "o/web"]);
+	});
+
+	it("tells the page when an issue does not exist or GitHub cannot be read", async () => {
+		const failing = (stderr) => () => {
+			throw Object.assign(new EvidenceUnavailable("failed: gh error"), { stderr });
+		};
+		const missing = await ops(failing("GraphQL: Could not resolve to an issue or pull request with the number of 99."));
+		await assert.rejects(missing.issue({ repository: "o/api", number: 99 }), refused(404, /does not exist/));
+		const down = await ops(failing("rate limited"));
+		await assert.rejects(down.issues({}), refused(502, /GitHub could not be read: failed: gh error/));
 	});
 });
 

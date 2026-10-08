@@ -1,31 +1,39 @@
 // The page's card registry on its TypeScript source, with fake containers instead of the DOM.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createMounts } from "../src/mounts.ts";
+import { createMounts, hostContext, pageHref, readPage } from "../src/mounts.ts";
 
 const card = (id, extra = {}) => ({ id, package: "github", kind: "issue", data: { n: id }, fallback: { text: `fallback ${id}` }, createdAt: "2026-10-08T00:00:00Z", ...extra });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** A registry whose package module is `module` (or a load that rejects), recording everything. */
-function registry({ module, available = () => true } = {}) {
-	const log = { loads: [], mounts: [], disposes: [], fallbacks: [], removed: [], warnings: [], contexts: [] };
+function registry({ module, available = () => true, pageAvailable = () => true } = {}) {
+	const log = { loads: [], mounts: [], disposes: [], fallbacks: [], removed: [], warnings: [], contexts: [], signals: [] };
 	const mountIssue = (container, { id, data, context }) => {
 		log.mounts.push(id);
 		log.contexts.push(context);
 		container.content = data;
 		return { dispose: () => log.disposes.push(id) };
 	};
+	const mountPage = (container, { params, context }) => {
+		log.mounts.push(`page ${params.n ?? ""}`);
+		log.contexts.push(context);
+		return { dispose: () => log.disposes.push(`page ${params.n ?? ""}`) };
+	};
 	const mounts = createMounts({
 		available,
+		pageAvailable,
 		load: async (pkg) => {
 			log.loads.push(pkg);
 			if (module instanceof Error) throw module;
-			return module ?? { cards: { issue: mountIssue } };
+			return module ?? { cards: { issue: mountIssue }, pages: { home: mountPage } };
 		},
 		create: (c) => ({ id: c.id }),
+		createPage: (ref) => ({ id: `page ${ref.params.n ?? ""}` }),
 		fallback: (container, c, failed) => log.fallbacks.push([c.id, failed]),
+		pageFallback: (container, ref, failed) => log.fallbacks.push([container.id, failed]),
 		remove: (container) => log.removed.push(container.id),
-		context: (c) => ({ package: c.package, session: "s1" }),
+		context: (target, signal) => (log.signals.push(signal), { ...target }),
 		warn: (message) => log.warnings.push(message),
 	});
 	return { mounts, log };
@@ -33,7 +41,7 @@ function registry({ module, available = () => true } = {}) {
 
 /** What the page does on every state event: ask for each card's container, then retain them. */
 function render(mounts, cards) {
-	const containers = cards.map((c) => mounts.container(c));
+	const containers = cards.map((c) => mounts.container(c, "s1"));
 	mounts.retain(new Set(cards.map((c) => c.id)));
 	return containers;
 }
@@ -96,7 +104,7 @@ describe("card mounts", () => {
 		const throwing = () => {
 			throw new Error("boom");
 		};
-		for (const module of [{ cards: {} }, { cards: { issue: throwing } }, { cards: { issue: () => ({}) } }, {}]) {
+		for (const module of [{ cards: {} }, { cards: { issue: throwing } }, { cards: { issue: () => ({}) } }, {}, { pages: { issue: () => ({ dispose() {} }) } }]) {
 			const { mounts, log } = registry({ module });
 			render(mounts, [card("a"), card("b")]);
 			await settle();
@@ -112,5 +120,84 @@ describe("card mounts", () => {
 		render(mounts, []);
 		assert.deepEqual(log.removed, ["a"]);
 		assert.match(log.warnings[0], /bad dispose/);
+	});
+
+	it("gives each card its own context for its session, aborted when the card goes", async () => {
+		const { mounts, log } = registry();
+		render(mounts, [card("a"), card("b")]);
+		await settle();
+		assert.deepEqual(log.contexts.map((c) => c.session), ["s1", "s1"]);
+		render(mounts, [card("b")]);
+		assert.deepEqual(log.signals.map((s) => s.aborted), [true, false]);
+	});
+});
+
+describe("page mounts", () => {
+	const page = (n, extra = {}) => ({ key: `github.home s1 n=${n}`, package: "github", page: "home", params: { n: String(n) }, session: "s1", ...extra });
+
+	it("mounts a page once per key, and disposes it on another page or on close", async () => {
+		const { mounts, log } = registry();
+		const first = mounts.page(page(1));
+		for (let i = 0; i < 5; i++) assert.equal(mounts.page(page(1)), first);
+		await settle();
+		mounts.page(page(2));
+		await settle();
+		assert.deepEqual([log.mounts, log.disposes, log.removed], [["page 1", "page 2"], ["page 1"], ["page 1"]]);
+		assert.deepEqual([log.signals[0].aborted, log.signals[1].aborted], [true, false]);
+		mounts.closePage();
+		mounts.closePage();
+		assert.deepEqual(log.disposes, ["page 1", "page 2"]);
+		assert.equal(log.signals[1].aborted, true);
+	});
+
+	it("shows the unavailable notice for a page the page does not list, or whose mount is missing", async () => {
+		const off = registry({ pageAvailable: () => false });
+		off.mounts.page(page(1));
+		await settle();
+		assert.deepEqual([off.log.loads, off.log.fallbacks], [[], [["page 1", false]]]);
+		const missing = registry({ module: { cards: {} } });
+		missing.mounts.page(page(1));
+		await settle();
+		assert.deepEqual(missing.log.fallbacks, [["page 1", true]]);
+		assert.match(missing.log.warnings[0], /no mount for page home/);
+	});
+});
+
+describe("page URLs and contexts", () => {
+	it("reads the page, its session and its parameters from the query; page, session and new are reserved", () => {
+		assert.equal(readPage("?session=s1"), undefined);
+		assert.deepEqual(readPage("?page=github.issue&session=s1&repository=o%2Fr&number=12&new"), {
+			key: "github.issue s1 number=12&repository=o%2Fr",
+			package: "github",
+			page: "issue",
+			params: { repository: "o/r", number: "12" },
+			session: "s1",
+		});
+		assert.equal(readPage("?page=github.issue&number=12&repository=o%2Fr").key, readPage("?repository=o%2Fr&page=github.issue&number=12").key);
+		for (const bad of ["?page=github", "?page=GitHub.home", "?page=a.b.c", "?page=..%2Fx.home"]) assert.deepEqual([readPage(bad).package, readPage(bad).page], ["", ""], bad);
+	});
+
+	it("makes page URLs within the package, keeping the session", () => {
+		assert.equal(pageHref("github", "issue", { repository: "o/r", number: "12" }, "s1"), "/?page=github.issue&session=s1&number=12&repository=o%2Fr");
+		assert.equal(pageHref("github", "home"), "/?page=github.home");
+		assert.throws(() => pageHref("github", "home", { session: "other" }), /reserved/);
+		assert.throws(() => pageHref("github", "../x"), /no page/);
+	});
+
+	it("calls the package's operations with the mount's signal, and refuses once it is aborted", async () => {
+		const calls = [];
+		const went = [];
+		const controller = new AbortController();
+		const context = hostContext({ package: "github", session: "s1" }, controller.signal, { call: async (...args) => (calls.push(args), { ok: true }), go: (href) => went.push(href) });
+		assert.deepEqual(await context.call("issues", { query: "x" }), { ok: true });
+		assert.deepEqual(calls[0].slice(0, 3), ["github", "issues", { query: "x" }]);
+		assert.equal(calls[0][3], controller.signal);
+		await assert.rejects(context.call("../session"), /no operation/);
+		context.navigate("issue", { number: "1" });
+		assert.deepEqual(went, ["/?page=github.issue&session=s1&number=1"]);
+		assert.ok(Object.isFrozen(context));
+		controller.abort();
+		await assert.rejects(context.call("issues"), /closed/);
+		assert.equal(calls.length, 1);
 	});
 });

@@ -19,6 +19,7 @@
 <p class="link-state" id="link-state" hidden></p>
 <div class="shell">
   <nav class="sessions" aria-labelledby="sessions-heading">
+    <ul class="ext-nav" id="ext-nav" aria-label="Pages" hidden></ul>
     <div class="sessions-head">
       <h2 id="sessions-heading">Sessions</h2>
       <a class="new-session" id="new-session" href="/?new">New session</a>
@@ -31,6 +32,13 @@
       <h1 id="session-title"></h1>
       <button type="button" class="quiet danger" id="delete">Delete</button>
     </div>
+    <section class="page-frame" id="page" hidden>
+      <div class="page-head">
+        <h1 id="page-title" tabindex="-1"></h1>
+        <a class="page-back" id="page-back" href="/" hidden>Back to session</a>
+      </div>
+      <div id="page-body"></div>
+    </section>
     <section class="empty" id="empty" hidden>
       <h1>Ask about your issues</h1>
       <p>Each question here starts a new session. Paca reads the issues and Projects in scope and answers with links. It creates an issue only when you approve its draft.</p>

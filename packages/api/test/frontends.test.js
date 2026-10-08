@@ -42,7 +42,7 @@ describe("frontend manifest", () => {
 		assert.equal(frontend.files.get("app.css").type, "text/css");
 		assert.equal(frontend.files.get("dist/index.js").type, "text/javascript");
 		assert.equal(frontend.files.get("icon.svg").type, "image/svg+xml");
-		assert.deepEqual(frontend.info, { name: "probe", entry: "/ext/probe/dist/index.js", styles: ["/ext/probe/app.css"], cards: ["note"] });
+		assert.deepEqual(frontend.info, { name: "probe", entry: "/ext/probe/dist/index.js", styles: ["/ext/probe/app.css"], cards: ["note"], pages: {} });
 		assert.deepEqual(lines, []);
 	});
 
@@ -64,8 +64,22 @@ describe("frontend manifest", () => {
 			[{ ...browser, cards: ["Issue"] }, /cards must be/],
 			[{ ...browser, cards: ["note", "note"] }, /cards must be/],
 			[{ ...browser, cards: ["a/b"] }, /cards must be/],
+			[{ ...browser, pages: ["home"] }, /pages must map/],
+			[{ ...browser, pages: { Home: { title: "Home" } } }, /page "Home"/],
+			[{ ...browser, pages: { home: {} } }, /needs a title/],
+			[{ ...browser, pages: { home: { title: "x".repeat(61) } } }, /needs a title/],
+			[{ ...browser, nav: { label: "Probe", page: "home" } }, /nav.page must be a declared page/],
+			[{ ...browser, pages: { home: { title: "Home" } }, nav: { label: "", page: "home" } }, /nav.label/],
+			[{ ...browser, pages: { home: { title: "Home" } }, nav: { label: "x".repeat(25), page: "home" } }, /nav.label/],
+			[{ ...browser, pages: { home: { title: "Home" } }, nav: { label: "Probe", page: "constructor" } }, /nav.page must be a declared page/],
 		];
 		for (const [manifest, message] of bad) await assert.rejects(load(root, manifest), (e) => message.test(e.message) && e.message.includes("@example/probe"), JSON.stringify(manifest));
+	});
+
+	it("tells the page the declared pages and the nav entry", async () => {
+		const { root, browser } = await packageDir();
+		const { frontend } = await load(root, { ...browser, pages: { home: { title: "Probe" }, item: { title: "Item" } }, nav: { label: "Probe", page: "home" } });
+		assert.deepEqual([frontend.info.pages, frontend.info.nav], [{ home: { title: "Probe" }, item: { title: "Item" } }, { label: "Probe", page: "home" }]);
 	});
 
 	it("turns the frontend off with one line when built files are missing; the tools still load", async () => {
@@ -97,6 +111,7 @@ describe("frontend manifest", () => {
 		const lines = [];
 		const [github] = await loadPackages({ "@paca/extension-github": { piClean: "/opt/pi-clean" } }, undefined, { disableFrontends: ["@paca/extension-github"], log: { log: (l) => lines.push(l) } });
 		assert.deepEqual(github.package.browser.cards, ["issue"]);
+		assert.deepEqual([Object.keys(github.package.browser.pages), github.package.browser.nav], [["home", "issue"], { label: "GitHub", page: "home" }]);
 		assert.deepEqual(lines, ["paca: extension @paca/extension-github: frontend disabled by config"]);
 	});
 
@@ -132,6 +147,7 @@ describe("frontend files over HTTP", () => {
 	const csp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 	const stubUser = (extensions) => ({
+		id: "stub",
 		sessions: { list: createFeed(() => [], 1) },
 		info: { model: "test/model", scope: "Probe", scopeDetail: "", extensions },
 	});

@@ -1,11 +1,12 @@
 // Scoped GitHub tools for one user: a Projects overview, issue reads and search, and issue drafts
 // the user approves. Each user brings their own repository scope and credential. How to rank work
 // or phrase answers is the host's persona, not part of these tools. A read issue is also shown as a
-// card in the chat, rendered by this package's browser entry (browser/).
+// card in the chat, and the GitHub pages read issues fresh through two read-only operations; both
+// are rendered by this package's browser entry (browser/).
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import { type CardInput, defineToolPackage, type Propose, type Show, type UserTools } from "@paca/extension";
-import { createGitHub, formatIssue, type GitHub, type Project, WriteRejected } from "./github.ts";
+import { type CardInput, defineToolPackage, type JsonValue, type Operation, OperationError, type Propose, type Show, type UserTools } from "@paca/extension";
+import { createGitHub, EvidenceUnavailable, formatIssue, type GitHub, type Label, type Project, WriteRejected } from "./github.ts";
 
 export interface GitHubSettings {
 	/** Absolute path of the pi-clean checkout providing github-planning.mjs. */
@@ -46,7 +47,7 @@ function checkUserSettings(id: string, settings: GitHubUserSettings): string | u
 }
 
 /** The part of the GitHub client the tools use; tests pass a stub. */
-export type GitHubAccess = Pick<GitHub, "projects" | "checkRepository" | "overview" | "issue" | "searchIssues" | "createIssue">;
+export type GitHubAccess = Pick<GitHub, "projects" | "checkRepository" | "overview" | "issue" | "findIssues" | "searchIssues" | "createIssue">;
 
 const CARD_MAX = 1024;
 const CARD_TITLE_MAX = 120;
@@ -83,6 +84,75 @@ export function issueCard(repository: string, issue: { number?: unknown; title?:
 	};
 }
 
+const ISSUE_BODY_MAX = 20_000;
+const COMMENT_BODY_MAX = 4_000;
+const COMMENTS = 10;
+const RESULT_LABELS = 5;
+
+const labelNames = (labels: unknown) => (Array.isArray(labels) ? labels : []).map((l: Label) => String(typeof l === "string" ? l : l?.name ?? "")).filter(Boolean);
+
+/**
+ * The reads behind the GitHub pages, bound to this user's scope and credential. An out-of-scope
+ * repository is a 404 the page shows, and so is a missing issue; GitHub failing to answer is a 502.
+ */
+function operations(github: GitHubAccess): Record<string, Operation> {
+	const scoped = (repository: unknown) => {
+		try {
+			return github.checkRepository(repository);
+		} catch {
+			throw new OperationError(404, "That repository is not in your GitHub scope.");
+		}
+	};
+	const reading = async <T>(read: () => Promise<T>): Promise<T> => {
+		try {
+			return await read();
+		} catch (error) {
+			if (!(error instanceof EvidenceUnavailable)) throw error;
+			if (/Could not resolve to an? (issue|Issue)|not found/i.test(error.stderr || error.message)) throw new OperationError(404, "That issue does not exist.");
+			throw new OperationError(502, `GitHub could not be read: ${clip(error.message, 200)}`);
+		}
+	};
+	return {
+		async issue(input) {
+			const repository = scoped(input.repository);
+			const number = Number(input.number);
+			if (!Number.isInteger(number) || number < 1) throw new OperationError(400, "An issue number is a positive whole number.");
+			const { issue } = await reading(() => github.issue(repository, number));
+			const comments: unknown[] = Array.isArray(issue.comments) ? issue.comments.slice(-COMMENTS) : [];
+			return {
+				repository,
+				number,
+				title: String(issue.title ?? ""),
+				state: String(issue.state).toLowerCase() === "closed" ? "closed" : "open",
+				url: `https://github.com/${repository}/issues/${number}`,
+				author: String(issue.author?.login ?? "unknown"),
+				labels: labelNames(issue.labels),
+				updatedAt: String(issue.updatedAt ?? ""),
+				body: clip(String(issue.body ?? ""), ISSUE_BODY_MAX),
+				comments: comments.map((c: any) => ({ author: String(c?.author?.login ?? "unknown"), createdAt: String(c?.createdAt ?? ""), body: clip(String(c?.body ?? ""), COMMENT_BODY_MAX) })),
+			} satisfies JsonValue;
+		},
+		async issues(input) {
+			const query = input.query === undefined || input.query === "" ? undefined : input.query;
+			if (query !== undefined && (typeof query !== "string" || query.length > 200)) throw new OperationError(400, "A search has at most 200 characters.");
+			if (query && /\b(repo|org|user|owner):/i.test(query)) throw new OperationError(400, "Choose a repository instead of repo:, org:, user: or owner: in the search.");
+			const repository = input.repository === undefined || input.repository === "" ? undefined : scoped(input.repository);
+			const found = await reading(() => github.findIssues({ query, repository }));
+			return {
+				repositories: [...new Set(github.projects.map((p) => p.repository))].sort(),
+				results: found.results.map((r) => ({
+					repository: r.repository!.nameWithOwner,
+					number: r.number,
+					title: String(r.title ?? ""),
+					state: String(r.state).toLowerCase() === "closed" ? "closed" : "open",
+					updatedAt: String(r.updatedAt ?? ""),
+					labels: labelNames(r.labels).slice(0, RESULT_LABELS),
+				})),
+			};
+		},
+	};
+}
+
 /** One user's tools over their GitHub access. `show` is the host's; without it no card is shown. */
 export function githubTools(github: GitHubAccess, propose: Propose, show?: Show): UserTools {
 	const repositories = [...new Set(github.projects.map((p) => p.repository))].sort();
@@ -109,6 +179,7 @@ export function githubTools(github: GitHubAccess, propose: Propose, show?: Show)
 				checkUrl: (proposal) => `https://github.com/${proposal.target}/issues?q=${encodeURIComponent("is:issue sort:created-desc")}`,
 			},
 		},
+		operations: operations(github),
 		scope: { label: `${github.projects.length} Projects`, detail: repositories.map((r) => r.split("/")[1]).join(", ") },
 	};
 }
@@ -164,7 +235,14 @@ function tools(github: GitHubAccess, propose: Propose, show: Show | undefined) {
 export default defineToolPackage<GitHubSettings, GitHubUserSettings>({
 	name: "github",
 	// Built by `npm run build` from browser/src into browser/dist.
-	browser: { dir: new URL("../browser/", import.meta.url).href, entry: "dist/index.js", styles: ["github.css"], cards: ["issue"] },
+	browser: {
+		dir: new URL("../browser/", import.meta.url).href,
+		entry: "dist/index.js",
+		styles: ["github.css"],
+		cards: ["issue"],
+		pages: { home: { title: "GitHub" }, issue: { title: "Issue" } },
+		nav: { label: "GitHub", page: "home" },
+	},
 	forUser({ user, settings, userSettings, cacheDir, propose, show }) {
 		if (userSettings === undefined) return undefined;
 		if (typeof settings?.piClean !== "string") throw new Error("extensions @paca/extension-github: piClean must be the absolute path of a pi-clean checkout");

@@ -128,15 +128,27 @@ export function createGitHub({ projects, piClean, dataDir, token, run = runFile,
 		return formatIssue(read.repository, read.issue);
 	}
 
-	async function searchIssues(query: string, repository?: string) {
-		if (typeof query !== "string" || !query.trim()) throw new Error("query must not be empty");
-		if (/\b(repo|org|user|owner):/i.test(query)) throw new Error("Use the repository argument instead of repo:, org:, user: or owner: qualifiers.");
+	/**
+	 * Issues in scope, optionally in one repository: up to 30 matching `query`, or without one up to
+	 * 20 open issues, most recently updated first.
+	 */
+	async function findIssues({ query, repository }: { query?: string; repository?: string }): Promise<{ repositories: string[]; results: SearchResult[] }> {
+		const words = query?.trim();
+		if (words && /\b(repo|org|user|owner):/i.test(words)) throw new Error("Use the repository argument instead of repo:, org:, user: or owner: qualifiers.");
 		const repos = repository ? [checkRepository(repository)] : repositories;
-		const args = ["search", "issues", query.slice(0, 200), "--limit", "30", "--json", "repository,number,title,state,url,updatedAt,labels"];
+		const args = words
+			? ["search", "issues", words.slice(0, 200), "--limit", "30"]
+			: ["search", "issues", "--state", "open", "--sort", "updated", "--order", "desc", "--limit", "20"];
+		args.push("--json", "repository,number,title,state,url,updatedAt,labels");
 		for (const r of repos) args.push("--repo", r);
 		const results: SearchResult[] = JSON.parse(await run("gh", args, { env, timeout: READ_TIMEOUT_MS }));
 		// Defense in depth: never pass on a result from outside the configured scope.
-		const inScope = results.filter((r) => allowed.has(String(r.repository?.nameWithOwner).toLowerCase()));
+		return { repositories: repos, results: results.filter((r) => allowed.has(String(r.repository?.nameWithOwner).toLowerCase())) };
+	}
+
+	async function searchIssues(query: string, repository?: string) {
+		if (typeof query !== "string" || !query.trim()) throw new Error("query must not be empty");
+		const { repositories: repos, results: inScope } = await findIssues({ query, repository });
 		if (inScope.length === 0) return `No issues matched ${JSON.stringify(query)} in ${repos.join(", ")}.`;
 		return inScope
 			.map((r) => `${r.repository!.nameWithOwner}#${r.number} [${r.state.toLowerCase()}] ${r.title} | labels: ${names(r.labels)} | updated ${day(r.updatedAt)} | ${r.url}`)
@@ -166,7 +178,7 @@ export function createGitHub({ projects, piClean, dataDir, token, run = runFile,
 		}
 	}
 
-	return { repositories, projects, checkRepository, overview, issue, readIssue, searchIssues, createIssue };
+	return { repositories, projects, checkRepository, overview, issue, readIssue, findIssues, searchIssues, createIssue };
 }
 
 export function planningConfigFor(projects: Project[]) {
@@ -182,7 +194,7 @@ export function planningConfigFor(projects: Project[]) {
 	};
 }
 
-interface SearchResult {
+export interface SearchResult {
 	repository?: { nameWithOwner: string };
 	number: number;
 	title: string;
@@ -191,7 +203,7 @@ interface SearchResult {
 	updatedAt?: string;
 	labels?: Label[];
 }
-type Label = string | { name: string };
+export type Label = string | { name: string };
 
 const day = (iso: unknown) => (iso ? String(iso).slice(0, 10) : "unknown");
 const names = (labels: Label[] | undefined) => (labels?.length ? labels.map((l) => (typeof l === "string" ? l : l.name)).join(", ") : "none");

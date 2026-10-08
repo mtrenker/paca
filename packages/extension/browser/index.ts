@@ -5,18 +5,28 @@
 // The entry is a native ES module the page imports from the package's own directory, under the
 // page's unchanged Content-Security-Policy: no inline <style> or style="" markup (linked CSS and
 // element.style writes work), no eval or runtime template compilers, no inline event attributes,
-// same-origin images only, and no bare import specifiers or import maps. Bundle the framework.
+// same-origin images only, no bare import specifiers or import maps, and no direct fetch: use
+// `context.call`. Bundle the framework.
 
-/** What the page tells one mounted card about where it is. Each mount gets its own. */
+/** What the page gives one mounted card or page. Each mount gets its own. */
 export interface HostContext {
 	/** The package's name, such as "github". */
 	readonly package: string;
-	/** The session the card belongs to. */
+	/** The session the card or page belongs to, if any. Links made with `href` keep it. */
 	readonly session?: string;
+	/**
+	 * Calls one of the package's operations (POST /api/ext/<package>/<op>) and resolves with its
+	 * JSON. Rejects with Error(message) from the API's `error`, and when the mount is disposed.
+	 */
+	call(op: string, input?: Record<string, unknown>): Promise<unknown>;
+	/** The URL of one of the package's pages. Put it on a link with `data-paca-nav` to open it in place. */
+	href(page: string, params?: Record<string, string>): string;
+	/** Opens one of the package's pages. */
+	navigate(page: string, params?: Record<string, string>): void;
 }
 
 export interface Mounted {
-	/** Called once, when the card leaves the page. The page removes the container afterwards. */
+	/** Called once, when the card or page goes away. The page removes the container afterwards. */
 	dispose(): void;
 }
 
@@ -27,7 +37,14 @@ export interface Mounted {
  */
 export type CardMount = (container: HTMLElement, card: { readonly id: string; readonly data: unknown; readonly createdAt: string; readonly context: HostContext }) => Mounted;
 
-/** The entry module's default export: a mount for every card kind the manifest declares. */
+/**
+ * Renders one page into `container`, below the page frame's title. `params` are the URL's query
+ * parameters other than page, session and new. Disposed once, when the user navigates away.
+ */
+export type PageMount = (container: HTMLElement, page: { readonly params: Readonly<Record<string, string>>; readonly context: HostContext }) => Mounted;
+
+/** The entry module's default export: a mount for every card kind and page the manifest declares. */
 export interface BrowserExtension {
 	readonly cards?: Readonly<Record<string, CardMount>>;
+	readonly pages?: Readonly<Record<string, PageMount>>;
 }

@@ -219,7 +219,7 @@ async function main() {
 		step("OIDC through the fake provider: other subject refused (403), allowed subject signed in");
 
 		// The GitHub package's frontend was built into the image and is served to this user only.
-		assert.deepEqual(info.extensions, [{ name: "github", entry: "/ext/github/dist/index.js", styles: ["/ext/github/github.css"], cards: ["issue"] }]);
+		assert.deepEqual(info.extensions, [{ name: "github", entry: "/ext/github/dist/index.js", styles: ["/ext/github/github.css"], cards: ["issue"], pages: { home: { title: "GitHub" }, issue: { title: "Issue" } }, nav: { label: "GitHub", page: "home" } }]);
 		for (const [path, type] of [["/ext/github/dist/index.js", "text/javascript"], ["/ext/github/github.css", "text/css"]]) {
 			const asset = await fetch(`${first.base}${path}`, { headers: { cookie } });
 			assert.deepEqual([asset.status, asset.headers.get("content-type")], [200, type], path);
@@ -227,7 +227,11 @@ async function main() {
 		}
 		assert.equal((await fetch(`${first.base}/ext/github/dist/index.js`)).status, 401);
 		assert.equal((await fetch(`${first.base}/ext/github/src/index.ts`, { headers: { cookie } })).status, 404);
-		step("GitHub card assets served after sign-in with the page's CSP (401 without a session, sources 404)");
+		// The GitHub pages' deep links load the page itself; the test-only Preact fixture is not in the image.
+		assert.equal((await fetch(`${first.base}/?page=github.issue&repository=example%2Frepo&number=1`, { headers: { cookie } })).status, 200);
+		assert.equal(await docker("exec", first.name, "find", "/app", "-path", "*extension-preact*", "-print", "-quit"), "");
+		assert.equal(await docker("exec", first.name, "find", "/app/node_modules", "-maxdepth", "1", "-name", "preact", "-print", "-quit"), "");
+		step("GitHub frontend listed with its nav entry; card assets served with the page's CSP (401 without a session, sources 404); deep links load; no fixture or Preact in the image");
 
 		const post = (path, body, origin = ORIGIN, csrf = info.csrf) =>
 			fetch(`${first.base}${path}`, { method: "POST", headers: { cookie, origin, "x-csrf-token": csrf, "content-type": "application/json" }, body: JSON.stringify(body) });

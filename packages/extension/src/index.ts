@@ -91,6 +91,26 @@ export interface BrowserManifest {
 	readonly styles?: readonly string[];
 	/** Card kinds the entry renders, such as ["issue"]. */
 	readonly cards?: readonly string[];
+	/** Pages the entry renders, by name, with the title the page frame shows. */
+	readonly pages?: Readonly<Record<string, { readonly title: string }>>;
+	/** One link in the side list, to a declared page that renders without parameters. */
+	readonly nav?: { readonly label: string; readonly page: string };
+}
+
+/**
+ * A read the package's browser code asks for, bound to the signed-in user like their tools. It
+ * must not write. Answer at most 512 KiB of JSON; the host aborts `signal` after 25 seconds.
+ */
+export type Operation = (input: Record<string, unknown>, signal: AbortSignal) => Promise<JsonValue>;
+
+/** A refusal or failure the user can act on: the page shows `message`, with `status`. Nothing is logged. */
+export class OperationError extends Error {
+	readonly status: 400 | 404 | 409 | 502;
+	constructor(status: 400 | 404 | 409 | 502, message: string) {
+		super(message);
+		this.name = "OperationError";
+		this.status = status;
+	}
 }
 
 /** How the page names a call of one tool in the evidence trail. */
@@ -108,6 +128,8 @@ export interface UserTools {
 	readonly prompt?: string;
 	readonly labels: Readonly<Record<string, ToolLabel>>;
 	readonly writes?: Readonly<Record<string, WriteAction>>;
+	/** Reads for the package's pages and cards (`context.call`), by name. */
+	readonly operations?: Readonly<Record<string, Operation>>;
 	/** A short line for the page header, such as "2 Projects", and its tooltip. */
 	readonly scope: { readonly label: string; readonly detail: string };
 }
