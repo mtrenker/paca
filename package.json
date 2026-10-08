@@ -12,6 +12,7 @@
     "prestart": "npm run build",
     "start": "node packages/api/src/main.ts",
     "ask": "node packages/api/src/ask.ts",
+    "check-extensions": "node packages/api/src/check-extensions.ts",
     "test": "node --test \"packages/*/test/*.test.js\"",
     "test:browser": "npm run build && npm run build:fixture && node --test --test-timeout=60000 \"test/browser/*.test.mjs\"",
     "test:container": "node test/container/smoke.mjs",

@@ -8,6 +8,7 @@ import type { Proposal } from "@paca/extension";
 import { LIMITS, openAgent, type Run } from "./agent.ts";
 import { DATA_DIR, loadConfig, userDataDir } from "./config.ts";
 import { loadPackages } from "./extensions.ts";
+import { loadLocalExtensions } from "./local-extensions.ts";
 import { openModels } from "./models.ts";
 import { toolsFor } from "./users.ts";
 import { uiState } from "./view.ts";
@@ -21,8 +22,12 @@ const piDir = join(userDir, "pi");
 await mkdir(piDir, { recursive: true, mode: 0o700 });
 const { models, model, label } = await openModels(DATA_DIR, config.model);
 const proposals: Proposal[] = [];
-// Cards are for the page; here they are dropped.
-const packages = toolsFor(operator, await loadPackages(config.extensions, undefined, { log: { log: () => {} } }), userDir, () => (_toolCallId, _ctx, proposal) => void proposals.push(proposal), () => () => {});
+// Cards are for the page; here they are dropped. Local extensions are the operator's: the global
+// ones and their own.
+const installed = await loadPackages(config.extensions, undefined, { log: { log: () => {} } });
+const stderr = { log: (line: string) => console.error(line) };
+const local = await loadLocalExtensions({ dataDir: DATA_DIR, users: [operator], installed, log: stderr });
+const packages = toolsFor(operator, [...installed, ...(local.get(operator.id) ?? [])], userDir, () => (_toolCallId, _ctx, proposal) => void proposals.push(proposal), () => () => {}, stderr);
 console.error(`model ${label}; tools ${packages.map((p) => `${p.name} (${p.tools.scope.label})`).join(", ") || "none"}`);
 
 let session: AgentSession | undefined;

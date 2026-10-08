@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createOidc, createSessions, loadSessionKey } from "./auth.ts";
 import { DATA_DIR, loadConfig } from "./config.ts";
 import { loadPackages } from "./extensions.ts";
+import { loadLocalExtensions } from "./local-extensions.ts";
 import { openModels } from "./models.ts";
 import { createApp } from "./server.ts";
 import { openUsers } from "./users.ts";
@@ -21,13 +22,14 @@ const oidc = await createOidc({
 
 const { models, model, label } = await openModels(DATA_DIR, config.model);
 const packages = await loadPackages(config.extensions, undefined, { disableFrontends: config.disableFrontends });
+// Read once: an edited local extension takes effect at the next start (docs/local-extensions.md).
+const local = await loadLocalExtensions({ dataDir: DATA_DIR, users: config.users, installed: packages });
 // Converts each user's legacy conversation before the server listens (legacy.ts).
-const users = await openUsers({ users: config.users, packages, dataDir: DATA_DIR, modelRuntime: models, model, modelLabel: label });
+const users = await openUsers({ users: config.users, packages, local, dataDir: DATA_DIR, modelRuntime: models, model, modelLabel: label });
 const sessions = createSessions({ key: await loadSessionKey(DATA_DIR), issuer: oidc.issuer, allows: (subject) => users.forSubject(subject) !== undefined });
 
 const webDir = dirname(fileURLToPath(import.meta.resolve("@paca/web/package.json")));
-const frontends = new Map(packages.flatMap((p) => (p.frontend ? [[p.package.name, p.frontend] as const] : [])));
-const server = createApp({ config, sessions, oidc, users, web: { public: join(webDir, "public"), script: join(webDir, "dist") }, frontends });
+const server = createApp({ config, sessions, oidc, users, web: { public: join(webDir, "public"), script: join(webDir, "dist") } });
 server.listen(config.port, config.host, () => {
 	console.log(`paca: listening on http://${config.host}:${config.port}, public at ${config.publicUrl}`);
 	console.log(`paca: model ${label}; ${users.all().length} users; tool packages: ${packages.map((p) => p.module).join(", ") || "none"}`);

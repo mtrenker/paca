@@ -21,6 +21,9 @@ syntax: no enums, namespaces or constructor parameter properties. Only the page 
 
 ## Make a change
 
+A private extension for your own Paca does not need a change here: write it in the data folder
+([Local extensions](docs/local-extensions.md)).
+
 - Keep a change to one purpose, and open or link an issue for anything bigger than a fix.
 - Add a focused test for changed behavior, especially anything touching sign-in, sessions,
   users, repository scope, limits or GitHub writes. Tests live in `packages/*/test/` and run with

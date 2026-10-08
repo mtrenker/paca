@@ -52,6 +52,11 @@ export interface RouteUser {
 		proposeFromPage?(id: string, request: PageProposal): Promise<Result>;
 	};
 	info: Omit<SessionInfo, "csrf" | "name">;
+	/**
+	 * The frontends this user's page lists, by package name (extensions.ts). Per user, since two
+	 * users' local extensions may share a name and still be different code.
+	 */
+	frontends?: ReadonlyMap<string, Frontend>;
 	/** The user's id, for log lines. */
 	id: string;
 	/** One of the user's package operations; the route checks the frontend is on first. */
@@ -78,14 +83,12 @@ export interface AppDeps {
 	users: { forSubject(subject: string): RouteUser | undefined };
 	/** `public`: HTML, CSS and icon; `script`: the compiled app.js. */
 	web: { public: string; script: string };
-	/** Each package's frontend that is on, by package name (extensions.ts). */
-	frontends?: ReadonlyMap<string, Frontend>;
 	/** How long an operation may take before it is aborted and answers 504. */
 	operationTimeoutMs?: number;
 	log?: Pick<Console, "warn" | "error">;
 }
 
-export function createApp({ config, sessions, oidc, users, web, frontends = new Map(), operationTimeoutMs = 25_000, log = console }: AppDeps) {
+export function createApp({ config, sessions, oidc, users, web, operationTimeoutMs = 25_000, log = console }: AppDeps) {
 	type Res = ServerResponse;
 	const send = (res: Res, status: number, body: string | Buffer, headers: Record<string, string | string[]> = {}) => {
 		res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
@@ -249,11 +252,12 @@ export function createApp({ config, sessions, oidc, users, web, frontends = new 
 		if (route === "GET /api/session") return json(res, 200, { csrf: session.csrf, name: session.name, ...user.info } satisfies SessionInfo);
 		const ext = req.method === "GET" ? EXT_ASSET.exec(url.pathname) : null;
 		if (ext) {
-			// Only a package this user's page lists, and only a file listed at start: the path is a key
-			// of that list, never resolved on disk, so traversal and encoded dots find nothing.
+			// Only a package this user's page lists, from this user's own map, and only a file listed at
+			// start: the path is a key of that list, never resolved on disk, so traversal and encoded
+			// dots find nothing.
 			// A path with dot segments is refused before the URL parser resolves them.
 			const exact = req.url?.split("?")[0] === url.pathname;
-			const file = exact && user.info.extensions?.some((e) => e.name === ext[1]) ? frontends.get(ext[1])?.files.get(ext[2]) : undefined;
+			const file = exact && user.info.extensions?.some((e) => e.name === ext[1]) ? user.frontends?.get(ext[1])?.files.get(ext[2]) : undefined;
 			const content = file && (await readFile(file.path).catch(() => undefined));
 			if (!file || !content) return json(res, 404, { error: "Not found." });
 			return send(res, 200, content, { "Content-Type": file.type, "Cache-Control": "no-cache" });

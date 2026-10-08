@@ -146,17 +146,18 @@ describe("frontend files over HTTP", () => {
 	let frontend;
 	const csp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
-	const stubUser = (extensions) => ({
+	const stubUser = (frontends) => ({
 		id: "stub",
 		sessions: { list: createFeed(() => [], 1) },
-		info: { model: "test/model", scope: "Probe", scopeDetail: "", extensions },
+		info: { model: "test/model", scope: "Probe", scopeDetail: "", extensions: frontends.map((f) => f.info) },
+		frontends: new Map(frontends.map((f) => [f.info.name, f])),
 	});
 
 	before(async () => {
 		const { root, browser } = await packageDir({ "dist/index.js": "export default {};", "app.css": ".ext-probe {}", ".env.js": "secret" });
 		await writeFile(join(root, "browser", "dist", "unlisted.ts"), "x");
 		({ frontend } = await load(root, browser));
-		const users = new Map([["martin", stubUser([frontend.info])], ["alex", stubUser([])]]);
+		const users = new Map([["martin", stubUser([frontend])], ["alex", stubUser([])]]);
 		const sessions = createSessions({ key: randomBytes(32), issuer: ISSUER, allows: (sub) => users.has(sub) });
 		server = createApp({
 			config: { publicUrl: PUBLIC, publicOrigin: PUBLIC },
@@ -164,7 +165,6 @@ describe("frontend files over HTTP", () => {
 			oidc: { begin: async () => ({ url: `${ISSUER}authorize`, transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => next },
 			users: { forSubject: (sub) => users.get(sub) },
 			web: { public: join(import.meta.dirname, "..", "..", "web", "public"), script: join(import.meta.dirname, "..", "..", "web", "public") },
-			frontends: new Map([["probe", frontend]]),
 			log: { warn: () => {}, error: () => {} },
 		});
 		await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

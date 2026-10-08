@@ -2,13 +2,14 @@
 // Starts the real image as an ordinary container against disposable fakes (fakes.mjs) with
 // throwaway data, signs in through the fake OIDC provider and asks one question of the fake
 // model, then moves the operator to a users config with Herdr against a fake Herdr socket
-// (fake-herdr.mjs) and approves one prompt. Nothing reaches real GitHub, a real identity provider,
+// (fake-herdr.mjs) and approves one prompt. Between the two first containers it copies the example
+// local extension of docs/local-extensions.md into the volume, as that guide says. Nothing reaches real GitHub, a real identity provider,
 // a paid model or a real terminal. Every container, network and volume it creates is named
 // paca-smoke-<run id> and removed at the end.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -57,6 +58,28 @@ async function setUp(tls) {
 		const child = execFile("docker", ["run", "--rm", "-i", "-v", `${names.volume}:/data`, "--entrypoint", "node", image, "-e", seed], (error) => (error ? reject(error) : resolve()));
 		child.stdin.end(JSON.stringify({ config, models }));
 	});
+}
+
+/**
+ * Copies the guide's example extension into /data/local-extensions/dice with the guide's command,
+ * so /data is beside /app as in production, and checks it with the guide's check in the running
+ * container: a new process, which sees the files without a restart.
+ */
+async function addLocalExtension(appName) {
+	const guide = await readFile(join(import.meta.dirname, "..", "..", "docs", "local-extensions.md"), "utf8");
+	const dir = await mkdtemp(join(tmpdir(), "paca-smoke-dice-"));
+	try {
+		for (const [, path, content] of guide.matchAll(/<!-- file: (\S+) -->\n```\w*\n([\s\S]*?)\n```/g)) {
+			await mkdir(join(dir, path, ".."), { recursive: true });
+			await writeFile(join(dir, path), `${content}\n`, { mode: 0o644 });
+		}
+		await exec("sh", ["-c", 'tar -C "$1" -c . | docker run --rm -i -v "$2":/data --entrypoint sh "$3" -c "mkdir -p /data/local-extensions/dice && tar -x -C /data/local-extensions/dice"', "sh", dir, names.volume, image]);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+	const check = await docker("exec", appName, "node", "packages/api/src/check-extensions.ts");
+	assert.match(check, /^paca: local extension local-extensions\/dice: loaded with its frontend$/m);
+	assert.match(check, /^user operator: github \(.+\); dice \(roll_dice\)$/m);
 }
 
 /** Starts Paca the way the docs do: loopback-only port, read-only root, no capabilities. */
@@ -259,11 +282,26 @@ async function main() {
 		step("wrong Origin and CSRF refused (403), bad id (400), old route (410); a new session answered by the fake model with one proposed draft waiting");
 		step("a page proposal made a new session holding its draft, a retry under another session id was a duplicate, and the session was deleted unapproved");
 
+		await addLocalExtension(first.name);
+		assert.equal((await fetch(`${first.base}/api/session`, { headers: { cookie } }).then((r) => r.json())).extensions.length, 1, "loaded only at start");
+		step("example local extension copied into /data with the guide's command; the guide's check in the running container loads it");
+
 		await stopApp(first.name);
 		await docker("rm", first.name);
 		const second = await startApp(tls);
 		const again = await fetch(`${second.base}/api/session`, { headers: { cookie } });
 		assert.equal(again.status, 200, "the session from the first container should still be valid");
+		const local = await again.json();
+		assert.deepEqual(local.extensions.map((e) => e.name), ["github", "dice"]);
+		assert.equal((await fetch(`${second.base}/ext/dice/index.js`, { headers: { cookie } })).status, 200);
+		const roll = (sides) => fetch(`${second.base}/api/ext/dice/roll`, { method: "POST", headers: { cookie, origin: ORIGIN, "x-csrf-token": local.csrf, "content-type": "application/json" }, body: JSON.stringify({ sides }) });
+		const rolled = await (await roll(20)).json();
+		assert.ok(rolled.sides === 20 && rolled.value >= 1 && rolled.value <= 20, JSON.stringify(rolled));
+		const refusedRoll = await roll(1);
+		assert.deepEqual([refusedRoll.status, await refusedRoll.json()], [400, { error: "Choose 2 to 100 sides." }]);
+		const logs = await exec("docker", ["logs", second.name]).then((r) => r.stdout + r.stderr);
+		assert.match(logs, /paca: local extension local-extensions\/dice: loaded with its frontend/);
+		step("after the restart: dice listed beside github, its module served, its operation answers, and its OperationError keeps its 400 under /data beside /app");
 		const kept = await waitFor(second.base, cookie, session, answered);
 		assert.deepEqual(kept.turns.find((t) => t.question === "Smoke question").drafts[0], draft);
 		step(`new container ${second.name} on the same volume: session key, session and draft kept`);

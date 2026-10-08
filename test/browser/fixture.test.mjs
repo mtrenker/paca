@@ -66,6 +66,7 @@ describe("a framework extension under the page's CSP", { skip: !browser }, () =>
 				watch: async (id) => (id === SESSION ? feed : undefined),
 			},
 			info: { model: "test/model", scope: "Fixture", scopeDetail: "", extensions: [fixture.frontend.info] },
+			frontends: new Map([["preact-fixture", fixture.frontend]]),
 			operation: (pkg, op) => (pkg === "preact-fixture" && Object.hasOwn(operations, op) ? (input, signal) => (echoed.push(input), operations[op](input, signal)) : undefined),
 		};
 		const config = { publicUrl: "", publicOrigin: "" };
@@ -76,7 +77,6 @@ describe("a framework extension under the page's CSP", { skip: !browser }, () =>
 			oidc: { begin: async () => ({ url: "/auth/callback?code=c&state=s", transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => ({ iss: ISSUER, sub: "tester", preferred_username: "tester" }) },
 			users: { forSubject: (sub) => (sub === "tester" ? user : undefined) },
 			web: { public: join(ROOT, "packages", "web", "public"), script: join(ROOT, "packages", "web", "dist") },
-			frontends: new Map([["preact-fixture", fixture.frontend]]),
 			log: { warn: () => {}, error: () => {} },
 		});
 		await new Promise((done) => server.listen(0, "127.0.0.1", done));
