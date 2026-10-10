@@ -248,7 +248,12 @@ throwaway certificate and data. It checks:
 - with a users config and a fake Herdr socket mounted read-only, the operator's question in a new
   session lists agents and proposes a prompt; approving it under another session is refused (404),
   approving it in its own session sends that exact text once, a second approval is refused, and
-  the prompt does not appear in the logs.
+  the prompt does not appear in the logs;
+- the example of an API called with the sign-in's access token
+  (`test/fixtures/extension-downstream`), copied into the volume, reads the fake Example API in
+  the fakes container as the operator after a sign-in that asked for its scopes; a proposed note
+  is written once on approval and a second approval is refused; a sign-out on one device asks the
+  other to sign in again; no token appears in the logs.
 
 It does not call GitHub: the fake model only drafts, and nobody approves the GitHub draft. The
 Herdr socket is a fake on the host (`fake-herdr.mjs`) that records prompts and types nothing.

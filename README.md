@@ -43,6 +43,12 @@ process, and depends on the Pi SDK (pi-coding-agent 1.0.3), which changes often.
 - Private extensions: tool packages, with cards and pages, kept in the data folder instead of
   Paca's repository, for everyone or for one user. Paca loads them at start; see
   [Local extensions](docs/local-extensions.md).
+- APIs as you: an extension can call an API that sits behind Paca's own identity provider with
+  the access token of your Paca sign-in, for the APIs and extensions the config allows you. There
+  is no separate connect step. Paca keeps that token in memory only: after a restart, or a
+  sign-out on another device, the page asks you to **Sign in again**. Writes still go through an
+  exact card you approve. The API must accept tokens issued to Paca's client; see
+  [the contract](docs/design/api-access.md).
 
 Not available yet: editing issues, labels, assignees, milestones and Project fields such as
 priority ([#6](https://github.com/mtrenker/paca/issues/6)).
@@ -125,7 +131,10 @@ Credentials stay on the server. The OIDC client secret comes from the environmen
 credentials from Pi, and GitHub access from each user's own token, or from your local `gh` login
 for the users you grant it. The browser only gets a session cookie. Conversation text and tool
 results are sent to your model provider. `gh` and the collector run without any `PACA_*`
-variable, so they never see the client secret or another user's token.
+variable, so they never see the client secret or another user's token. The access and refresh
+tokens of a sign-in are kept only in the server's memory, for the configured APIs, and never
+written to disk, the cookie or the page; they end with the sign-in's 12-hour session, a sign-out
+or a restart.
 
 ## Prerequisites
 
@@ -197,6 +206,14 @@ npm test
    - `"disableFrontends": ["@paca/extension-github"]` (optional, top level) turns off the browser
      code of listed packages: their cards show plain text, their pages and side-list link are
      gone, and their tools keep working. Each entry must be a package under `extensions`.
+   - `"apis"` (optional, top level) names APIs that extensions call as the signed-in user, with
+     the access token from Paca's sign-in. Each has a `label`, a fixed `https:` `url` ending in
+     `/`, the `scopes` it needs (asked for at sign-in) and the `extensions` that may call it. A
+     user gets an API only with `"apis": ["<name>"]` in their entry. `oidc.scopes` adds scopes
+     to the sign-in, such as `["offline_access"]` for refresh tokens. The API must validate the
+     token's issuer, signature and audience, and accept Paca's client as an audience; a shared
+     identity provider alone is not enough. Read [the contract](docs/design/api-access.md) before
+     configuring one.
    - Each `users` entry is one person: an `id` (lowercase letters, digits and dashes, used in
      data paths), their OIDC `subject`, and their settings for each tool package under the
      package's name. `operator: true` marks you: the operator owns the conversation from before
@@ -310,7 +327,14 @@ they make no network calls. They cover:
 - local extensions in a data folder outside the checkout: the guide's example with the faux
   model, each user's own tools, operations and frontend files (also for two users' extensions of
   the same name), skipped and colliding extensions, host and own imports, and edits picked up by
-  a new process.
+  a new process;
+- APIs called with the sign-in's access token, against a fake API that checks audience and
+  scopes: the grant is the access token (never the ID token), a wrong state, nonce or PKCE
+  verifier gets none, two users each read as themselves, a user or extension not allowed gets
+  nothing, destinations outside the API and redirects are refused, renewal before expiry with one
+  refresh for simultaneous requests, refused refresh, unreachable issuer, the 12-hour end,
+  sign-out on another device, a restart with a surviving cookie, missing scopes, and approvals
+  that wait for a new sign-in and are then written once, never resent when unknown.
 
 ## Contributing and license
 

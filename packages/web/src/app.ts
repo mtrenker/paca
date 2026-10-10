@@ -25,10 +25,31 @@ async function start() {
 	info = await response.json();
 	$("scope").textContent = `${info.scope} · ${info.model}`;
 	$("scope").title = info.scopeDetail;
+	renderApiState();
 	renderNav();
 	readUrl();
 	connect();
 	render();
+}
+
+/**
+ * Says when the user's extensions cannot call an API as them (docs/design/api-access.md): Paca keeps
+ * that access only in memory, so after a restart, a sign-out elsewhere or a refused refresh the page
+ * asks for a new sign-in, which is Paca's ordinary one. Nothing is shown while every API is ready.
+ */
+function renderApiState() {
+	const signIn = (info.apis ?? []).filter((a) => a.state === "sign-in");
+	const notGranted = (info.apis ?? []).filter((a) => a.state === "not-granted");
+	const notice = $("api-state");
+	const names = (apis: typeof signIn) => apis.map((a) => a.label).join(" and ");
+	notice.replaceChildren();
+	if (signIn.length) {
+		const again = el("a", "", "Sign in again");
+		again.href = "/auth/login";
+		notice.append(`Sign in again so your extensions can use ${names(signIn)} as you. Paca keeps that access only in memory, and it ended (after a restart, a sign-out or an expiry). `, again);
+	}
+	if (notGranted.length) notice.append(`${signIn.length ? " " : ""}Your sign-in doesn’t include access to ${names(notGranted)}; signing in again won’t change that. Ask the operator.`);
+	notice.hidden = !signIn.length && !notGranted.length;
 }
 
 /** ?page=<package>.<page> is an extension page; ?session=<id> opens a session; ?new is New session; none is the list (on a phone). */
@@ -372,7 +393,8 @@ function renderCardFallback(container: HTMLElement, card: CardRef, failed: boole
 	container.replaceChildren(text);
 }
 
-// How a card speaks about its write. A draft without a known action is a GitHub issue draft.
+// How a card speaks about its write: GitHub's issue drafts, Herdr's prompts, and any other
+// extension's write in neutral words.
 interface CardWords {
 	kicker: Record<string, string>;
 	approve: string;
@@ -407,13 +429,27 @@ const PROMPT: CardWords = {
 	dismissed: "Nothing was sent.",
 };
 
+/** Another extension's write, such as a note through an API called as the user (#21). */
+const WRITE: CardWords = {
+	kicker: { proposed: "Proposed change", creating: "Sending…", created: "Done", failed: "Not done", unknown: "Outcome unknown", dismissed: "Dismissed" },
+	approve: "Approve",
+	note: "Sends exactly this, once, as you.",
+	sending: "Sending…",
+	done: () => [el("span", "draft-note", "It was accepted.")],
+	failed: (d) => `${d.error ?? "It was refused"}. Nothing was written. Ask again if you still want it.`,
+	unknown: (d) => [el("span", "draft-note", `Paca can’t tell whether it happened, so it won’t send it again. Check ${d.target} before asking again. ${d.error ?? ""}`.trim())],
+	dismissed: "Nothing was sent.",
+};
+
+const wordsOf = (draft: DraftCard) => (draft.action === PROMPT_ACTION ? PROMPT : draft.action.startsWith("github.") ? ISSUE : WRITE);
+
 const pendingDrafts = new Set<string>();
 
 // A proposed write, shown exactly as it would be performed: plain text, nothing interpreted.
 // An issue shows its repository, title and body; a prompt its agent, directory and exact text.
 function renderDraft(draft: DraftCard) {
 	const prompt = draft.action === PROMPT_ACTION;
-	const words = prompt ? PROMPT : ISSUE;
+	const words = wordsOf(draft);
 	const kicker = words.kicker[draft.status] ?? draft.status;
 	const card = el("article", `draft-card ${draft.status}`);
 	if (prompt) {
@@ -457,7 +493,10 @@ async function decide(id: string, action: "approve" | "dismiss") {
 	render();
 	try {
 		const response = await post(`/api/sessions/${current}/drafts/${action}`, { id });
-		if (!response.ok && response.status !== 409) showError((await response.json().catch(() => ({}))).error ?? "That didn’t work.");
+		const answer = response.ok ? undefined : await response.json().catch(() => ({}));
+		// A 409 usually means it was decided elsewhere, which the stream shows; one that leaves the
+		// draft proposed says why it can't run now, such as an API that needs a new sign-in.
+		if (answer && (response.status !== 409 || answer.status === "proposed")) showError(answer.error ?? "That didn’t work.");
 	} catch {
 		showError("Could not reach Paca. Reload to see what happened before trying again.");
 	} finally {
@@ -485,12 +524,14 @@ function confirmDelete() {
 		for (const d of created) {
 			const li = el("li");
 			if (d.action === PROMPT_ACTION) li.append(`Prompt submitted to ${d.target}`);
+			else if (wordsOf(d) === WRITE) li.append(`${d.title} in ${d.target}`);
 			else li.append(link(d.url ?? "", `${d.target}#${d.number}`), ` ${d.title}`);
 			list.append(li);
 		}
 		for (const d of unknown) {
 			const li = el("li", "unknown");
 			if (d.action === PROMPT_ACTION) li.append(`Prompt to ${d.target}: outcome unknown.`);
+			else if (wordsOf(d) === WRITE) li.append(`${d.title} in ${d.target}: outcome unknown.`);
 			else li.append(`${d.title}: outcome unknown. `, link(d.checkUrl ?? "", `Check ${d.target} issues`));
 			list.append(li);
 		}

@@ -60,7 +60,7 @@ before(async () => {
 		sessions,
 		oidc: {
 			begin: async () => ({ url: `${ISSUER}authorize?state=s`, transaction: { state: "s", nonce: "n", verifier: "v" } }),
-			finish: async () => nextClaims,
+			finish: async () => ({ claims: nextClaims }),
 		},
 		users: { forSubject: (sub) => users.get(sub) },
 		web: { public: join(import.meta.dirname, "..", "..", "web", "public"), script: join(import.meta.dirname, "..", "..", "web", "public") },

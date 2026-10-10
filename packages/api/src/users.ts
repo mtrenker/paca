@@ -6,8 +6,9 @@ import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { SessionInfo } from "@paca/contracts";
-import type { Operation, Propose, Show, UserTools } from "@paca/extension";
+import type { Operation, Propose, Show, UserApi, UserTools } from "@paca/extension";
 import type { Limits, PackageTools } from "./agent.ts";
+import { type ApiAccess, createApiAccess, type UserAccess } from "./api-access.ts";
 import { legacyStorePath, type UserConfig, userDataDir } from "./config.ts";
 import type { Frontend, LoadedPackage } from "./extensions.ts";
 import { convertLegacy } from "./legacy.ts";
@@ -20,12 +21,14 @@ export interface UserHost {
 	/** The user's id, for log lines. */
 	id: string;
 	sessions: Sessions;
-	/** What the page header shows about this user's scope. */
-	info: Omit<SessionInfo, "csrf" | "name">;
+	/** What the page header shows about this user's scope. The APIs' state is read per request (`apis`). */
+	info: Omit<SessionInfo, "csrf" | "name" | "apis">;
 	/** The frontends this user's page lists, by package name. Per user: two users' local extensions can share a name. */
 	frontends: ReadonlyMap<string, Frontend>;
 	/** One of the operations a package gave this user. */
 	operation(packageName: string, op: string): Operation | undefined;
+	/** The APIs this user's extensions call with their sign-in's access token (api-access.ts). */
+	apis: UserAccess;
 }
 
 export interface OpenUsersOptions {
@@ -38,6 +41,8 @@ export interface OpenUsersOptions {
 	model: Model<any>;
 	modelLabel: string;
 	limits?: Limits;
+	/** Access to the configured APIs; without it, nobody calls any. */
+	apiAccess?: ApiAccess;
 	/** Removes one file during a delete; tests hold or fail it. */
 	removeFile?: (path: string) => Promise<void>;
 	log?: Pick<Console, "log" | "error">;
@@ -49,13 +54,13 @@ export interface OpenUsersOptions {
  * extension that throws, or whose tools are malformed or reuse a name, is left out for this user
  * with one log line; an installed package that throws still refuses the start.
  */
-export function toolsFor(user: UserConfig, packages: readonly LoadedPackage[], cacheDir: string, proposeFor: (packageName: string) => Propose, showFor: (packageName: string, kinds: readonly string[]) => Show, log: Pick<Console, "log"> = console): PackageTools[] {
+export function toolsFor(user: UserConfig, packages: readonly LoadedPackage[], cacheDir: string, proposeFor: (packageName: string) => Propose, showFor: (packageName: string, kinds: readonly string[]) => Show, log: Pick<Console, "log"> = console, apisFor: (packageName: string) => Record<string, UserApi> = () => ({})): PackageTools[] {
 	const tools: PackageTools[] = [];
 	for (const { module, package: pkg, settings, local } of packages) {
 		try {
 			const show = showFor(pkg.name, pkg.browser?.cards ?? []);
 			const userSettings = Object.hasOwn(user, pkg.name) ? user[pkg.name] : undefined;
-			const userTools = pkg.forUser({ user: { id: user.id, operator: user.operator }, settings, userSettings, cacheDir, propose: proposeFor(pkg.name), show });
+			const userTools = pkg.forUser({ user: { id: user.id, operator: user.operator }, settings, userSettings, cacheDir, propose: proposeFor(pkg.name), show, apis: apisFor(pkg.name) });
 			if (userTools && local) checkTools(userTools, tools);
 			if (userTools) tools.push({ name: pkg.name, tools: userTools });
 		} catch (error) {
@@ -88,7 +93,7 @@ function checkTools(userTools: UserTools, before: readonly PackageTools[]) {
 }
 
 /** Opens every user, converting each one's legacy store first. Call before the server listens. */
-export async function openUsers({ users, packages, local, dataDir, modelRuntime, model, modelLabel, limits, removeFile, log = console }: OpenUsersOptions) {
+export async function openUsers({ users, packages, local, dataDir, modelRuntime, model, modelLabel, limits, apiAccess = noApis, removeFile, log = console }: OpenUsersOptions) {
 	const bySubject = new Map<string, UserHost>();
 	for (const user of users) {
 		const dir = userDataDir(dataDir, user);
@@ -96,7 +101,8 @@ export async function openUsers({ users, packages, local, dataDir, modelRuntime,
 		const store = openStore(join(dir, "paca.db"));
 		await convertLegacy({ legacyPath: legacyStorePath(dataDir, user), userDir: dir, store, log });
 		const mine = [...packages, ...(local?.get(user.id) ?? [])];
-		const sessions = await openSessions({ userDir: dir, store, modelRuntime, model, tools: (proposeFor, showFor) => toolsFor(user, mine, dir, proposeFor, showFor, log), limits, removeFile, log });
+		const apis = apiAccess.forUser(user.id, user.subject, user.apis ?? []);
+		const sessions = await openSessions({ userDir: dir, store, modelRuntime, model, tools: (proposeFor, showFor) => toolsFor(user, mine, dir, proposeFor, showFor, log, apis.forExtension), limits, removeFile, log });
 		const scope = sessions.packages.map((p) => p.tools.scope);
 		// The page loads a frontend only for a package that gave this user tools.
 		const frontends = new Map(sessions.packages.flatMap((p) => {
@@ -108,7 +114,7 @@ export async function openUsers({ users, packages, local, dataDir, modelRuntime,
 			const operations = sessions.packages.find((p) => p.name === packageName)?.tools.operations;
 			return operations && Object.hasOwn(operations, op) ? operations[op] : undefined;
 		};
-		bySubject.set(user.subject, { user, id: user.id, sessions, info, frontends, operation });
+		bySubject.set(user.subject, { user, id: user.id, sessions, info, frontends, operation, apis });
 		log.log(`paca: user ${user.id}${user.operator ? " (operator)" : ""}: ${sessions.packages.map((t) => t.name).join(", ") || "no tools"}`);
 	}
 	return {
@@ -120,3 +126,5 @@ export async function openUsers({ users, packages, local, dataDir, modelRuntime,
 }
 
 export type Users = Awaited<ReturnType<typeof openUsers>>;
+
+const noApis = createApiAccess({ apis: {}, refresh: () => Promise.reject(new Error("no APIs")) });

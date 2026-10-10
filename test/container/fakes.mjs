@@ -5,6 +5,7 @@
 import { createSign, generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:https";
+import { API_PATH, createFakeApi, toNode } from "./fake-api.mjs";
 
 const CLIENT = { id: "paca-smoke", secret: "smoke-client-secret" };
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -28,7 +29,9 @@ export const FAKE_PROMPT = "Summarise in three lines where you are and what is l
 /**
  * A question that mentions an agent, from a user with Herdr scope: list the agents, then propose
  * FAKE_PROMPT for the first one listed, then answer. A question naming an issue as owner/name#12:
- * read it, then answer slowly, so the preview shows the issue card while the answer streams. Any
+ * read it, then answer slowly, so the preview shows the issue card while the answer streams. A
+ * question about notes, from a user with the example's notes tools (#21): read them, or propose
+ * one when asked to add or remember something, then answer. Any
  * other question: draft an issue in the first repository of the user's GitHub scope, as the system
  * prompt states it, then answer. Answers stream word by word over the model delay, or `spread`
  * times it.
@@ -47,6 +50,12 @@ function completion(request) {
 		const pane = tools.length === 1 && /^- .* in ([\w-]+:p\d+):/m.exec(tools[0])?.[1];
 		if (pane) return use("propose_prompt", { pane, prompt: FAKE_PROMPT });
 		return say(pane === undefined ? "Smoke answer: no agents in scope." : "Smoke answer: proposed a prompt for the first agent.");
+	}
+	const offered = new Set((request.tools ?? []).map((t) => t.function?.name));
+	if (offered.has("read_notes") && /\bnotes?\b/i.test(asked)) {
+		const write = /\b(add|remember|write|propose)\b/i.test(asked);
+		if (tools.length === 0) return write ? use("propose_note", { note: asked.replace(/^.*?:\s*/, "").slice(0, 200) || "A note from the preview" }) : use("read_notes", {});
+		return say(write ? `Smoke answer: ${tools[0]}` : `Smoke answer, from what Paca read:\n\n${tools[0]}`);
 	}
 	const issue = /\b([\w.-]+\/[\w.-]+)#(\d+)\b/.exec(asked);
 	if (issue) {
@@ -77,13 +86,18 @@ const escape = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.charCode
  * @param {{ origin: string, port: number, users: { sub: string, username: string }[] }} [options.login]
  *   a sign-in page for a browser, listing synthetic users, with the same certificate. Paca's OIDC
  *   client accepts only an HTTPS authorization endpoint. Without it, /authorize is absent.
+ * @param {number} [options.accessSeconds] how long the access tokens it issues last. They are
+ *   for Paca's client and accepted by the fake Example API under /example-api/v1/ (fake-api.mjs);
+ *   asking for `offline_access` adds a rotating refresh token.
  */
-export function startFakes({ issuer, port, tls, host, login, modelDelayMs = 0, log = console.log }) {
+export function startFakes({ issuer, port, tls, host, login, modelDelayMs = 0, accessSeconds, log = console.log }) {
 	const authorizationEndpoint = login ? `${login.origin}/authorize` : `${issuer}authorize`;
+	const exampleApi = createFakeApi({ audience: CLIENT.id, accessSeconds });
 	const api = createServer(tls, async (req, res) => {
 		const url = new URL(req.url, issuer);
 		const route = `${req.method} ${url.pathname}`;
 		log(`fakes: ${route}`);
+		if (url.pathname.startsWith(API_PATH)) return toNode(req, res, exampleApi.handle);
 		if (route === "GET /.well-known/openid-configuration") {
 			return json(res, 200, {
 				issuer,
@@ -95,6 +109,7 @@ export function startFakes({ issuer, port, tls, host, login, modelDelayMs = 0, l
 				id_token_signing_alg_values_supported: ["ES256"],
 				code_challenge_methods_supported: ["S256"],
 				token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+				grant_types_supported: ["authorization_code", "refresh_token"],
 			});
 		}
 		if (route === "GET /jwks") return json(res, 200, { keys: [jwk] });
@@ -104,10 +119,15 @@ export function startFakes({ issuer, port, tls, host, login, modelDelayMs = 0, l
 			const basic = `Basic ${Buffer.from(`${CLIENT.id}:${CLIENT.secret}`).toString("base64")}`;
 			const posted = form.get("client_id") === CLIENT.id && form.get("client_secret") === CLIENT.secret;
 			if (req.headers.authorization !== basic && !posted) return json(res, 401, { error: "invalid_client" });
-			const { sub, username, nonce } = JSON.parse(Buffer.from(form.get("code") ?? "", "base64url").toString("utf8"));
+			if (form.get("grant_type") === "refresh_token") {
+				const renewed = await exampleApi.renew(form.get("refresh_token") ?? "");
+				return renewed ? json(res, 200, renewed) : json(res, 400, { error: "invalid_grant" });
+			}
+			// A code from the smoke test may name no scope: then only Paca's own.
+			const { sub, username, nonce, scope = "openid profile" } = JSON.parse(Buffer.from(form.get("code") ?? "", "base64url").toString("utf8"));
 			const now = Math.floor(Date.now() / 1000);
 			const claims = { iss: issuer, aud: CLIENT.id, sub, preferred_username: username, nonce, iat: now, exp: now + 300 };
-			return json(res, 200, { access_token: "smoke-access-token", token_type: "Bearer", expires_in: 300, id_token: idToken(claims) });
+			return json(res, 200, { ...exampleApi.issue({ sub, username, scope }), id_token: idToken(claims) });
 		}
 		if (route === "POST /v1/chat/completions") {
 			res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -131,17 +151,17 @@ export function startFakes({ issuer, port, tls, host, login, modelDelayMs = 0, l
 				if (!URL.canParse(url.searchParams.get("redirect_uri") ?? "")) return json(res, 400, { error: "redirect_uri is required" });
 				const back = (user) => {
 					const target = new URL(url.searchParams.get("redirect_uri"));
-					target.searchParams.set("code", b64({ sub: user.sub, username: user.username, nonce: url.searchParams.get("nonce") }));
+					target.searchParams.set("code", b64({ sub: user.sub, username: user.username, nonce: url.searchParams.get("nonce"), scope: url.searchParams.get("scope") ?? "openid" }));
 					target.searchParams.set("state", url.searchParams.get("state") ?? "");
 					return target.href;
 				};
 				const links = login.users.map((u) => `<li><a href="${escape(back(u))}">Sign in as ${escape(u.username)}</a></li>`).join("");
 				res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-				res.end(`<!doctype html><meta name="viewport" content="width=device-width"><title>Fake sign-in</title><h1>Fake sign-in (preview only)</h1><ul>${links}</ul>`);
+				res.end(`<!doctype html><meta name="viewport" content="width=device-width"><title>Fake sign-in</title><h1>Fake sign-in (preview only)</h1><p>Paca asks for: ${escape(url.searchParams.get("scope") ?? "")}</p><ul>${links}</ul>`);
 			}).listen(login.port, host, () => log(`fakes: sign-in page on ${login.origin}/authorize`))
 		: undefined;
 
-	return { close: () => Promise.all([api, page].filter(Boolean).map((s) => new Promise((resolve) => s.close(resolve)))) };
+	return { exampleApi, close: () => Promise.all([api, page].filter(Boolean).map((s) => new Promise((resolve) => s.close(resolve)))) };
 }
 
 // In the smoke test's container: fixed name, port and certificate.

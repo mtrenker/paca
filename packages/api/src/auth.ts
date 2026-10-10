@@ -6,6 +6,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import * as oidc from "openid-client";
+import { type Grant, RefreshRefused } from "./api-access.ts";
 
 export const SESSION_COOKIE = "__Host-paca";
 const LOGIN_COOKIE = "__Host-paca-login";
@@ -91,8 +92,24 @@ export interface Transaction {
 	nonce: string;
 }
 
-export async function createOidc({ issuer, clientId, clientSecret, redirectUri }: { issuer: string; clientId: string; clientSecret: string; redirectUri: string }) {
-	const config = await oidc.discovery(new URL(issuer), clientId, clientSecret);
+/**
+ * @param scopes asked for at sign-in (config.signInScopes): "openid profile", then any for refresh
+ * tokens and the configured APIs. The access token is kept in memory for those APIs (api-access.ts).
+ */
+export async function createOidc({ issuer, clientId, clientSecret, redirectUri, scopes = ["openid", "profile"], customFetch }: { issuer: string; clientId: string; clientSecret: string; redirectUri: string; scopes?: readonly string[]; customFetch?: typeof fetch }) {
+	const config = await oidc.discovery(new URL(issuer), clientId, clientSecret, undefined, customFetch ? { [oidc.customFetch]: customFetch as oidc.CustomFetch } : undefined);
+	/** The tokens as a grant for the configured APIs. Never an ID token: that is not an API credential. */
+	const grantOf = (tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers): Grant => {
+		const expiresIn = tokens.expiresIn();
+		const subject = tokens.claims()?.sub;
+		return {
+			accessToken: tokens.access_token,
+			...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
+			...(expiresIn !== undefined ? { expiresAt: Date.now() + expiresIn * 1000 } : {}),
+			...(typeof tokens.scope === "string" ? { scope: tokens.scope } : {}),
+			...(subject ? { subject } : {}),
+		};
+	};
 	return {
 		/** The issuer as the provider states it; ID tokens must carry exactly this value. */
 		issuer: config.serverMetadata().issuer,
@@ -101,7 +118,7 @@ export async function createOidc({ issuer, clientId, clientSecret, redirectUri }
 			const transaction = { verifier, state: oidc.randomState(), nonce: oidc.randomNonce() };
 			const url = oidc.buildAuthorizationUrl(config, {
 				redirect_uri: redirectUri,
-				scope: "openid profile",
+				scope: scopes.join(" "),
 				code_challenge: await oidc.calculatePKCECodeChallenge(verifier),
 				code_challenge_method: "S256",
 				state: transaction.state,
@@ -109,15 +126,40 @@ export async function createOidc({ issuer, clientId, clientSecret, redirectUri }
 			});
 			return { url: url.href, transaction };
 		},
-		/** Validates the callback and returns the ID token claims. */
-		async finish(callbackUrl: string, transaction: Transaction): Promise<Claims> {
+		/** Validates the callback and returns the ID token claims, and the grant for the configured APIs. */
+		async finish(callbackUrl: string, transaction: Transaction): Promise<{ claims: Claims; grant?: Grant }> {
 			const tokens = await oidc.authorizationCodeGrant(config, new URL(callbackUrl), {
 				pkceCodeVerifier: transaction.verifier,
 				expectedState: transaction.state,
 				expectedNonce: transaction.nonce,
 				idTokenExpected: true,
 			});
-			return tokens.claims() as Claims;
+			return { claims: tokens.claims() as Claims, grant: grantOf(tokens) };
+		},
+		/** A fresh grant for a refresh token. Throws RefreshRefused when the issuer answers with a refusal. */
+		async refresh(refreshToken: string): Promise<Grant> {
+			try {
+				return grantOf(await oidc.refreshTokenGrant(config, refreshToken));
+			} catch (error) {
+				// A temporary failure keeps the grant and fails only this request; anything else ends it.
+				if (temporary(error)) throw error;
+				const code = (error as { code?: string })?.code ?? "";
+				throw new RefreshRefused((error as { error?: string }).error ?? (code || "refused"));
+			}
 		},
 	};
+}
+
+/**
+ * Whether a failed refresh says nothing about the grant: no answer (a network error, a timeout), or
+ * an issuer that is down, overloaded or slow (HTTP 5xx, 408, 429, also as a proxy's HTML page). Any
+ * other answer, a 4xx such as invalid_grant or tokens that fail validation, is a refusal.
+ * openid-client 6 gives the status on a ResponseBodyError, or as the Response in `cause`.
+ */
+function temporary(error: unknown): boolean {
+	const { code = "", status, cause } = (error ?? {}) as { code?: string; status?: unknown; cause?: unknown };
+	if (code === "OAUTH_TIMEOUT" || code === "OAUTH_ABORT") return true;
+	const answered = typeof status === "number" ? status : cause instanceof Response ? cause.status : undefined;
+	if (answered !== undefined) return answered >= 500 || answered === 408 || answered === 429;
+	return !(error instanceof oidc.ResponseBodyError) && !code.startsWith("OAUTH_");
 }

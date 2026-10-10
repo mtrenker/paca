@@ -33,7 +33,8 @@ A private extension for your own Paca does not need a change here: write it in t
   `CHROME_BIN=/usr/bin/chromium`, or else an installed Google Chrome. Without one it skips with a
   line naming `CHROME_BIN`; in CI it fails.
 - Use the fakes the tests already use: pi-ai's faux provider for models, a stub `run` function or
-  stub `github` object for GitHub, `test/container/fake-herdr.mjs` for Herdr's socket, and stub
+  stub `github` object for GitHub, `test/container/fake-herdr.mjs` for Herdr's socket,
+  `test/container/fake-api.mjs` for an API called with the sign-in's access token, and stub
   `oidc` objects and users for the server. Tests must not call a real model, GitHub, Herdr or an
   identity provider, and never prompt a real agent.
 - Never test against live GitHub writes. A real issue is created only when the person whose
@@ -53,6 +54,11 @@ an issue's **Propose follow-up issue** puts a draft in the open session, or a ne
 issue** on it answers with a made-up issue. `martin` is the operator and also has a fake Herdr with two agents in scope and one
 outside it: a question that mentions an agent lists them and proposes a prompt, and
 **Send prompt** only records it in the fake (the preview's terminal says so).
+Both users' sign-in also asks for the scopes of the fake Example API, so **Example notes** in the
+side list reads their notes there as them, and a question about notes reads them or, with "add a
+note: …", proposes one for **Approve**. The access token lives only in the preview's memory:
+after you restart the preview, the page asks you to **Sign in again**, which is the same fake
+sign-in.
 
 ```sh
 ss -ltn | grep -E ':440[2-4] ' || echo "4402-4404 are free"

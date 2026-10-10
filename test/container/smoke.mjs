@@ -3,7 +3,9 @@
 // throwaway data, signs in through the fake OIDC provider and asks one question of the fake
 // model, then moves the operator to a users config with Herdr against a fake Herdr socket
 // (fake-herdr.mjs) and approves one prompt. Between the two first containers it copies the example
-// local extension of docs/local-extensions.md into the volume, as that guide says. Nothing reaches real GitHub, a real identity provider,
+// local extension of docs/local-extensions.md into the volume, as that guide says. Last, the example
+// of an API called with the sign-in's access token (#21) reads and writes the fake Example API
+// (fake-api.mjs) as the operator. Nothing reaches real GitHub, a real identity provider,
 // a paid model or a real terminal. Every container, network and volume it creates is named
 // paca-smoke-<run id> and removed at the end.
 import assert from "node:assert/strict";
@@ -39,7 +41,7 @@ async function setUp(tls) {
 	await docker("network", "create", names.network);
 	await docker("volume", "create", names.volume);
 	await docker("run", "-d", "--name", names.fakes, "--network", names.network, "--network-alias", "fakes",
-		"-v", `${tls}:/tls:ro`, "-v", `${join(import.meta.dirname, "fakes.mjs")}:/fakes.mjs:ro`, "--entrypoint", "node", image, "/fakes.mjs");
+		"-v", `${tls}:/tls:ro`, "-v", `${join(import.meta.dirname, "fakes.mjs")}:/fakes.mjs:ro`, "-v", `${join(import.meta.dirname, "fake-api.mjs")}:/fake-api.mjs:ro`, "--entrypoint", "node", image, "/fakes.mjs");
 	// Seed the volume the way an operator would: config.json and Pi's models.json, nothing else.
 	const config = {
 		publicUrl: PUBLIC_URL,
@@ -117,14 +119,16 @@ async function stopApp(name) {
 
 const cookieOf = (response) => response.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
 
-async function signIn(base, sub) {
+/** Signs in through the fake provider, which grants the scopes Paca asked for. */
+async function signIn(base, sub, { scope = "openid profile" } = {}) {
 	const login = await fetch(`${base}/auth/login`, { redirect: "manual" });
 	assert.equal(login.status, 302);
 	const authorize = new URL(login.headers.get("location"));
 	assert.equal(authorize.origin, "https://fakes:8443");
 	assert.equal(authorize.searchParams.get("redirect_uri"), `${PUBLIC_URL}/auth/callback`);
 	assert.equal(authorize.searchParams.get("code_challenge_method"), "S256");
-	const code = Buffer.from(JSON.stringify({ sub, username: sub, nonce: authorize.searchParams.get("nonce") })).toString("base64url");
+	assert.equal(authorize.searchParams.get("scope"), scope);
+	const code = Buffer.from(JSON.stringify({ sub, username: sub, nonce: authorize.searchParams.get("nonce"), scope })).toString("base64url");
 	const callback = `${base}/auth/callback?code=${code}&state=${authorize.searchParams.get("state")}`;
 	return fetch(callback, { redirect: "manual", headers: { cookie: cookieOf(login) } });
 }
@@ -204,6 +208,73 @@ async function checkHerdr(tls, cookie, earlier) {
 	} finally {
 		await herdr.close();
 	}
+}
+
+/**
+ * An API called with the sign-in's access token (#21): the example extension of
+ * test/fixtures/extension-downstream copied into the volume, the fake Example API in the fakes
+ * container, and the image's own openid-client over HTTPS. Reads and one approved write as the
+ * operator, sign-out on another device, and no token in the logs.
+ */
+async function checkApi(tls) {
+	const scope = "openid profile offline_access notes.read notes.write";
+	await writeConfig({
+		publicUrl: PUBLIC_URL,
+		oidc: { issuer: "https://fakes:8443/", clientId: "paca-smoke", scopes: ["offline_access"] },
+		model: "fake/fake-model",
+		extensions: {},
+		apis: { notes: { label: "Example API", url: "https://fakes:8443/example-api/v1/", scopes: ["notes.read", "notes.write"], extensions: ["example-notes"] } },
+		users: [{ id: "operator", subject: SUBJECT, operator: true, apis: ["notes"] }],
+	});
+	const dir = await mkdtemp(join(tmpdir(), "paca-smoke-notes-"));
+	try {
+		const fixture = join(import.meta.dirname, "..", "fixtures", "extension-downstream");
+		for (const path of ["package.json", "index.ts", "browser/index.js", "browser/notes.css"]) {
+			await mkdir(join(dir, path, ".."), { recursive: true });
+			await writeFile(join(dir, path), await readFile(join(fixture, path)), { mode: 0o644 });
+		}
+		await exec("sh", ["-c", 'tar -C "$1" -c . | docker run --rm -i -v "$2":/data --entrypoint sh "$3" -c "mkdir -p /data/local-extensions/example-notes && tar -x -C /data/local-extensions/example-notes"', "sh", dir, names.volume, image]);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+	const app = await startApp(tls);
+	const device = async () => {
+		const cookie = cookieOf(await signIn(app.base, SUBJECT, { scope }));
+		const info = await (await fetch(`${app.base}/api/session`, { headers: { cookie } })).json();
+		const post = async (path, body = {}) => {
+			const response = await fetch(`${app.base}${path}`, { method: "POST", headers: { cookie, origin: ORIGIN, "x-csrf-token": info.csrf, "content-type": "application/json" }, body: JSON.stringify(body) });
+			return [response.status, await response.json()];
+		};
+		return { cookie, info, post, notes: async () => (await post("/api/ext/example-notes/notes"))[1] };
+	};
+	const phone = await device();
+	assert.deepEqual(phone.info.apis, [{ name: "notes", label: "Example API", state: "ready" }]);
+	assert.ok(phone.info.extensions.some((e) => e.name === "example-notes"), "the example is listed beside the dice example from earlier");
+	const read = await phone.notes();
+	assert.equal(read.username, SUBJECT);
+	assert.match(read.notes[0].text, /^Welcome, /);
+	step("APIs: one sign-in asked for the API's scopes; the example read the fake Example API with that access token, as the operator");
+
+	const session = randomUUID();
+	assert.equal((await phone.post("/api/sessions", { id: session, text: "Add a note: Smoke note", requestId: `smoke-note-${run}` }))[0], 202);
+	const state = await waitFor(app.base, phone.cookie, session, answeredWithDraft("Add a note: Smoke note"));
+	const card = state.turns.find((t) => t.question === "Add a note: Smoke note").drafts[0];
+	assert.deepEqual([card.action, card.target, card.body, card.status], ["example-notes.add_note", "Example API", "Smoke note", "proposed"]);
+	assert.deepEqual(await phone.post(`/api/sessions/${session}/drafts/approve`, { id: card.id }), [200, { status: "created" }]);
+	assert.equal((await phone.post(`/api/sessions/${session}/drafts/approve`, { id: card.id }))[0], 409);
+	assert.deepEqual((await phone.notes()).notes.map((n) => n.text).filter((t) => t === "Smoke note"), ["Smoke note"]);
+	step("APIs: a proposed note approved once and written once; a second approval refused (409)");
+
+	const laptop = await device();
+	await phone.post("/auth/logout");
+	const after = await (await fetch(`${app.base}/api/session`, { headers: { cookie: laptop.cookie } })).json();
+	assert.equal(after.apis[0].state, "sign-in");
+	assert.equal((await laptop.notes()).signIn, true);
+	const logs = await exec("docker", ["logs", app.name]).then((r) => r.stdout + r.stderr);
+	assert.ok(!/\b(at|rt)-[A-Za-z0-9_-]{20,}/.test(logs), "a token appeared in the logs");
+	assert.ok(!logs.includes("Smoke note"), "the note appeared in the logs");
+	step("APIs: sign-out on one device asks the other to sign in again; no token or note in the logs");
+	await stopApp(app.name);
 }
 
 async function main() {
@@ -307,6 +378,7 @@ async function main() {
 		step(`new container ${second.name} on the same volume: session key, session and draft kept`);
 		await stopApp(second.name);
 		await checkHerdr(tls, cookie, session);
+		await checkApi(tls);
 		step("passed");
 	} catch (error) {
 		for (const name of [...apps, names.fakes]) {

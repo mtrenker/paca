@@ -25,7 +25,7 @@ web page ([Update](#update-restart-and-refresh)).
 - A folder is enabled by being there. Rename it to start with a dot (`.dice`) to switch it off,
   or remove it. Files beside the folders are ignored.
 - `<name>` is the extension's name: lowercase letters, digits and dashes, starting with a letter,
-  and not `paca`, `id`, `subject` or `operator`. It must equal the `name` given to
+  and not `paca`, `id`, `subject`, `operator` or `apis`. It must equal the `name` given to
   `defineToolPackage`.
 - `<data>/extensions/` is something else: it is reserved for packages' own data later
   ([Architecture](architecture.md#future-extension-storage-not-built)).
@@ -176,7 +176,7 @@ A local extension is a tool package like the installed ones, so the
 - **`forUser`** runs once per configured user at start (only for its owner, for a personal one),
   with `user` (`id`, `operator`), `settings` (always `undefined` for a local extension),
   `userSettings` (that user's entry under `<name>` in `config.json`, or `undefined`), `cacheDir`,
-  `propose` and `show`. Return `undefined` to give this user nothing. Throw for invalid settings:
+  `propose`, `show` and `apis`. Return `undefined` to give this user nothing. Throw for invalid settings:
   the extension is then left out for that user only.
 - **Tools** are Pi tools (`defineTool`) with a `name`, `label`, `description`, `parameters` (a
   schema such as `Type.Object({})`) and `execute`. They read. Paca's API has one way to write: a
@@ -196,6 +196,40 @@ A local extension is a tool package like the installed ones, so the
 Each user gets only their own extensions' tools, operations, cards and files. Two users can
 each have a personal extension with the same name and different code: each one's page loads
 their own.
+
+## Calling an API as the user
+
+An API behind Paca's own identity provider can be called with the user's sign-in access token,
+when `config.json` lists it under `apis`, names your extension in its `extensions` and lists it in
+the user's `apis` ([README](../README.md#configure), [the contract](design/api-access.md)).
+`forUser` then gets it in `apis.<name>`:
+
+```ts
+const api = apis.notes;
+if (!api) return undefined; // this user may not call it
+// In a tool or operation: the token is added by Paca and never seen here.
+const answer = await api.request("/notes", { signal });
+// In a write action, after the user approved the exact proposal: sent once, never retried.
+await api.request("/notes", { method: "POST", body: { text: proposal.body } });
+// A conditional write: the version (a quoted strong ETag) read when proposing, kept in the proposal.
+await api.request(`/notes/${proposal.expect.id}`, { method: "PATCH", body: { text: proposal.body }, ifMatch: proposal.expect.etag });
+```
+
+- `api.state()` is `ready`, `sign-in` (the user must sign in to Paca again, after a restart or a
+  sign-out) or `not-granted` (their sign-in lacks the API's scopes). Read it when you need it.
+- `request` takes a path below the configured URL only, never follows a redirect, and answers
+  `{ status, body }`. It throws `ApiError`: `sent: false` means nothing left Paca, so a write
+  did not happen (`failed`); `sent: true` means it may have (`unknown`).
+- Give your write action a `ready()` that returns why it cannot run now, such as a needed
+  sign-in: the approval is then refused and the proposal waits.
+- For an API that wants `If-Match` on edits, read the version when you build the proposal, put
+  it in `expect`, and pass exactly that as `ifMatch` in the write action. Do not read the item
+  again when the write runs: a newer version would overwrite a change the user never saw. A 412
+  means it changed; report `failed` and let the user propose again. `ifMatch` takes one quoted
+  strong ETag on a write and nothing else; Paca sets every other header.
+
+The complete example is `test/fixtures/extension-downstream` in Paca's repository: a read tool,
+a proposed note with its write action, a conditional edit of a note, and a page.
 
 ## Imports and dependencies
 
@@ -297,7 +331,7 @@ longer be approved: Paca answers "its tool package is not enabled for you". Data
   example `.data/preview/local-extensions/dice/` in a checkout) and run `npm run preview` (see
   [CONTRIBUTING](../CONTRIBUTING.md#preview-a-change)): its pages and operations work for the
   synthetic users `martin` and `alex`. The preview's fake model only drafts issues, so it never
-  calls your tools or shows their cards.
+  calls your tools or shows their cards (apart from the example's notes tools).
 - Test logic that does not import Paca's packages, such as `roll.ts`, with
   `node --test roll.test.ts` in the extension's folder.
 - Never test against a real model, GitHub or identity provider, and never against the live

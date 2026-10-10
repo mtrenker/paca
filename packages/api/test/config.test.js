@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig, signInScopes } from "../src/config.ts";
 
 const CONFIG = {
 	publicUrl: "https://paca.example.test:8443",
@@ -99,5 +99,52 @@ describe("users", () => {
 		await assert.rejects(load({ ...USERS, users, disableFrontends: ["@paca/extension-herdr"] }), /disableFrontends must list packages enabled under extensions/);
 		await assert.rejects(load({ ...USERS, users, disableFrontends: "@paca/extension-github" }), /disableFrontends/);
 		assert.deepEqual((await load({ ...CONFIG, disableFrontends: ["@paca/extension-github"] })).disableFrontends, ["@paca/extension-github"]);
+	});
+});
+
+describe("APIs called as the user (#21)", () => {
+	let dir;
+	const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+	const API = { label: "Example API", url: "https://api.example.test/v1/", scopes: ["notes.read"], extensions: ["example-notes"] };
+	const users = (apis) => [{ id: "martin", subject: "sub-martin", operator: true, apis }];
+	const load = async (patch) => {
+		await writeFile(join(dir, "config.json"), JSON.stringify({ publicUrl: "https://paca.example.test", port: 4302, oidc: { issuer: "https://id.example.test/", clientId: "paca" }, extensions: {}, users: users(["notes"]), apis: { notes: API }, ...patch }));
+		return loadConfig();
+	};
+	before(async () => {
+		dir = await mkdtemp(join(tmpdir(), "paca-config-"));
+	});
+	beforeEach(() => {
+		for (const k of KEYS) delete process.env[k];
+		process.env.PACA_CONFIG = join(dir, "config.json");
+		process.env.PACA_OIDC_CLIENT_SECRET = "test-secret";
+	});
+	after(async () => {
+		for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+		await rm(dir, { recursive: true });
+	});
+
+	it("reads the APIs and asks for their scopes at sign-in, once each", async () => {
+		const config = await load({ oidc: { issuer: "https://id.example.test/", clientId: "paca", scopes: ["offline_access", "notes.read"] } });
+		assert.deepEqual(config.apis.notes, { name: "notes", ...API });
+		assert.deepEqual(signInScopes(config), ["openid", "profile", "offline_access", "notes.read"]);
+		assert.deepEqual(config.users[0].apis, ["notes"]);
+	});
+
+	it("needs no APIs", async () => {
+		const config = await load({ apis: undefined, users: users(undefined) });
+		assert.deepEqual(config.apis, {});
+		assert.deepEqual(signInScopes(config), ["openid", "profile"]);
+	});
+
+	it("refuses an API that is not a fixed https base, and users naming unknown APIs", async () => {
+		for (const url of ["http://api.example.test/v1/", "https://user:pw@api.example.test/v1/", "https://api.example.test/v1", "https://api.example.test/v1/?x=1", "https://api.example.test/v1/#x", "https://API.example.test/v1/"]) {
+			await assert.rejects(load({ apis: { notes: { ...API, url } } }), /url must be an https URL/, url);
+		}
+		await assert.rejects(load({ apis: { notes: { ...API, scopes: ["has space"] } } }), /scopes must list/);
+		await assert.rejects(load({ apis: { notes: { ...API, extensions: "example-notes" } } }), /extensions must list/);
+		await assert.rejects(load({ apis: { Notes: API } }), /names are lowercase/);
+		await assert.rejects(load({ users: users(["other"]) }), /users "martin": apis must list configured APIs/);
+		await assert.rejects(load({ oidc: { issuer: "https://id.example.test/", clientId: "paca", scopes: "offline_access" } }), /oidc.scopes must list/);
 	});
 });

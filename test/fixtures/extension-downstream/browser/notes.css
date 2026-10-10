@@ -1,0 +1,13 @@
+.ext-example-notes .notes-status { margin: 0 0 1rem; color: var(--muted); }
+.ext-example-notes .notes-list { margin: 0 0 1.5rem; padding-left: 1.25rem; }
+.ext-example-notes .notes-list li { margin: 0 0 0.5rem; overflow-wrap: anywhere; }
+.ext-example-notes .notes-empty, .ext-example-notes .notes-hint { color: var(--muted); }
+.ext-example-notes .notes-error { color: var(--error); }
+.ext-example-notes .notes-form { display: grid; gap: 0.5rem; max-width: 32rem; }
+.ext-example-notes .notes-form[hidden] { display: none; }
+.ext-example-notes label { font-weight: 600; }
+.ext-example-notes textarea { font: inherit; padding: 0.5rem 0.75rem; border: 1px solid var(--line); border-radius: 0.5rem; background: var(--surface); color: var(--ink); }
+.ext-example-notes button { justify-self: start; padding: 0.5rem 1rem; border-radius: 0.5rem; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.ext-example-notes button:disabled { opacity: 0.5; cursor: default; }
+.ext-example-notes .notes-hint { margin: 0; font-size: 0.875rem; }
+.ext-example-notes .notes-signin { font-weight: 600; }

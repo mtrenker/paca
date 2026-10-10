@@ -2,8 +2,9 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createApiAccess } from "./api-access.ts";
 import { createOidc, createSessions, loadSessionKey } from "./auth.ts";
-import { DATA_DIR, loadConfig } from "./config.ts";
+import { DATA_DIR, loadConfig, signInScopes } from "./config.ts";
 import { loadPackages } from "./extensions.ts";
 import { loadLocalExtensions } from "./local-extensions.ts";
 import { openModels } from "./models.ts";
@@ -18,14 +19,18 @@ const oidc = await createOidc({
 	clientId: config.oidc.clientId,
 	clientSecret: process.env.PACA_OIDC_CLIENT_SECRET!,
 	redirectUri: new URL("/auth/callback", config.publicUrl).href,
+	scopes: signInScopes(config),
 });
 
 const { models, model, label } = await openModels(DATA_DIR, config.model);
 const packages = await loadPackages(config.extensions, undefined, { disableFrontends: config.disableFrontends });
 // Read once: an edited local extension takes effect at the next start (docs/local-extensions.md).
 const local = await loadLocalExtensions({ dataDir: DATA_DIR, users: config.users, installed: packages });
+// Each user's sign-in access token for the configured APIs, in this process only: after a restart
+// users sign in again (docs/design/api-access.md).
+const apiAccess = createApiAccess({ apis: config.apis, refresh: (token) => oidc.refresh(token) });
 // Converts each user's legacy conversation before the server listens (legacy.ts).
-const users = await openUsers({ users: config.users, packages, local, dataDir: DATA_DIR, modelRuntime: models, model, modelLabel: label });
+const users = await openUsers({ users: config.users, packages, local, dataDir: DATA_DIR, modelRuntime: models, model, modelLabel: label, apiAccess });
 const sessions = createSessions({ key: await loadSessionKey(DATA_DIR), issuer: oidc.issuer, allows: (subject) => users.forSubject(subject) !== undefined });
 
 const webDir = dirname(fileURLToPath(import.meta.resolve("@paca/web/package.json")));
