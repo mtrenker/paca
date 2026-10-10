@@ -270,3 +270,8 @@ main {
 	.running .status, .session-meta .running::before { animation: pulse 1.4s ease-in-out infinite; }
 	@keyframes pulse { 50% { opacity: 0.45; } }
 }
+
+/* The user's extensions cannot call an API as them until they sign in again (#21). */
+.api-state { margin: 0; padding: 0.5rem 1rem; background: var(--warn-bg); color: var(--warn); font-size: 0.875rem; text-align: center; border-bottom: 1px solid var(--line); }
+.api-state[hidden] { display: none; }
+.api-state a { color: inherit; font-weight: 600; }

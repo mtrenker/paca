@@ -42,6 +42,12 @@ export type WriteOutcome =
 	| { readonly status: "failed" | "unknown"; readonly error: string };
 
 export interface WriteAction {
+	/**
+	 * Why this proposal cannot be approved right now, such as an API the user must sign in again for;
+	 * undefined when it can. Asked before the approval is claimed, so a refusal
+	 * leaves the proposal waiting. Must not write.
+	 */
+	ready?(proposal: Proposal): string | undefined;
 	/** Writes the approved proposal once. Throwing counts as `unknown`. */
 	execute(proposal: Proposal): Promise<WriteOutcome>;
 	/** Where the user can check whether an unknown write happened, when there is a page for it. */
@@ -143,6 +149,45 @@ export interface UserTools {
 	readonly scope: { readonly label: string; readonly detail: string };
 }
 
+export type ApiMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+/** Whether an API can be called for the user now: `sign-in` means they must sign in to Paca again. */
+export type ApiState = "ready" | "sign-in" | "not-granted";
+
+/**
+ * One configured API, called as the signed-in user with the access token of their Paca sign-in,
+ * which the package never sees. See docs/design/api-access.md.
+ */
+export interface UserApi {
+	readonly name: string;
+	/** What the page calls it, such as "Example API". */
+	readonly label: string;
+	/** Read it when you need it: the user's grant can end at any time. */
+	state(): ApiState;
+	/**
+	 * One JSON request to a path below the configured URL. Answers every HTTP status; throws
+	 * ApiError otherwise. A read (GET) may refresh and retry once after a 401. Every other method is
+	 * a write and is never retried.
+	 */
+	request(path: string, init?: { method?: ApiMethod; body?: JsonValue; signal?: AbortSignal }): Promise<{ status: number; body: unknown }>;
+}
+
+/**
+ * An API request that got no HTTP answer. `sent` is false when nothing left Paca (no grant, a
+ * refused destination, a failed refresh), so a write did not happen; true when the request may have
+ * reached the API, so a write's outcome is unknown.
+ */
+export class ApiError extends Error {
+	readonly code: string;
+	readonly sent: boolean;
+	constructor(code: string, message: string, sent: boolean) {
+		super(message);
+		this.name = "ApiError";
+		this.code = code;
+		this.sent = sent;
+	}
+}
+
 export interface ForUserInput<Settings = unknown, UserSettings = unknown> {
 	readonly user: HostUser;
 	/** This package's entry under `extensions` in config.json. */
@@ -153,6 +198,8 @@ export interface ForUserInput<Settings = unknown, UserSettings = unknown> {
 	readonly cacheDir: string;
 	readonly propose: Propose;
 	readonly show: Show;
+	/** The APIs this user and this package are both allowed, by name; empty when none. */
+	readonly apis: Readonly<Record<string, UserApi>>;
 }
 
 export interface ToolPackage<Settings = unknown, UserSettings = unknown> {

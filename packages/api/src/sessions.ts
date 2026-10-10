@@ -344,13 +344,21 @@ export async function openSessions({ userDir, store, modelRuntime, model, tools:
 			return { session: admitted.sessionId, draft: draft.id, duplicate: admitted.result === "duplicate" };
 		},
 		/** Performs the stored draft with its package's write action, once. */
-		async approveDraft(id: string, draftId: string): Promise<{ status: DraftStatus; url?: string } | Refused<string>> {
+		async approveDraft(id: string, draftId: string): Promise<{ status: DraftStatus; url?: string } | Refused<string> | { refused: "not-ready"; error: string }> {
 			if (store.session(id)?.state !== "active") return { refused: "not-found" };
 			const draft = store.draft(id, draftId);
 			if (!draft) return { refused: "not-found" };
 			if (draft.status !== "proposed") return { refused: draft.status };
 			const action = writes.get(draft.action);
 			if (!action) return { refused: "unavailable" };
+			// Asked before the claim: a refusal leaves the draft proposed, to approve later or dismiss.
+			let notReady: string | undefined;
+			try {
+				notReady = action.ready?.(proposalOf(draft));
+			} catch (error) {
+				notReady = `It can't be approved now: ${(error as Error)?.message ?? error}`;
+			}
+			if (notReady) return { refused: "not-ready", error: notReady };
 			if (!store.claim(id, draftId)) return refusal(id, draftId);
 			changed(id);
 			let outcome: WriteOutcome;

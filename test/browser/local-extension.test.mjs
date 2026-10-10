@@ -65,7 +65,7 @@ describe("a local extension in the browser", { skip: !browser }, () => {
 		server = createApp({
 			config,
 			sessions: createSessions({ key: randomBytes(32), issuer: ISSUER, allows: (sub) => users.forSubject(sub) !== undefined }),
-			oidc: { begin: async () => ({ url: "/auth/callback?code=c&state=s", transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => ({ iss: ISSUER, sub: subject }) },
+			oidc: { begin: async () => ({ url: "/auth/callback?code=c&state=s", transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => ({ claims: { iss: ISSUER, sub: subject } }) },
 			users,
 			web: { public: join(ROOT, "packages", "web", "public"), script: join(ROOT, "packages", "web", "dist") },
 			log: { warn: () => {}, error: () => {} },

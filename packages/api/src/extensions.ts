@@ -54,7 +54,7 @@ export async function loadPackages(
 	for (const [module, settings] of Object.entries(enabled)) {
 		if (module.startsWith(".") || module.startsWith("/") || module.includes(":")) throw new Error(`extensions: ${module} is a path; enable installed packages by name`);
 		const entry = checkPackage(module, (await load(module)).default, settings, () => rootOf(module), { frontendOff: disableFrontends.includes(module), log });
-		if (entry.package.name === "paca" || loaded.some((p) => p.package.name === entry.package.name)) throw new Error(`extensions: ${module} reuses the name "${entry.package.name}"`);
+		if (entry.package.name === "paca" || entry.package.name === "apis" || loaded.some((p) => p.package.name === entry.package.name)) throw new Error(`extensions: ${module} reuses the name "${entry.package.name}"`);
 		loaded.push(entry);
 	}
 	return loaded;

@@ -74,7 +74,7 @@ describe("a framework extension under the page's CSP", { skip: !browser }, () =>
 			config,
 			sessions: createSessions({ key: randomBytes(32), issuer: ISSUER, allows: (sub) => sub === "tester" }),
 			// The browser goes straight back to the real callback route, which sets the real cookies.
-			oidc: { begin: async () => ({ url: "/auth/callback?code=c&state=s", transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => ({ iss: ISSUER, sub: "tester", preferred_username: "tester" }) },
+			oidc: { begin: async () => ({ url: "/auth/callback?code=c&state=s", transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => ({ claims: { iss: ISSUER, sub: "tester", preferred_username: "tester" } }) },
 			users: { forSubject: (sub) => (sub === "tester" ? user : undefined) },
 			web: { public: join(ROOT, "packages", "web", "public"), script: join(ROOT, "packages", "web", "dist") },
 			log: { warn: () => {}, error: () => {} },

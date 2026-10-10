@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import type { PageState, SessionInfo, SessionSummary } from "@paca/contracts";
 import { type Operation, OperationError } from "@paca/extension";
+import type { UserAccess } from "./api-access.ts";
 import type { Oidc, Session, Sessions } from "./auth.ts";
 import type { Frontend } from "./extensions.ts";
 import type { Feed } from "./feed.ts";
@@ -51,7 +52,9 @@ export interface RouteUser {
 		watch(id: string): Promise<Feed<PageState> | undefined>;
 		proposeFromPage?(id: string, request: PageProposal): Promise<Result>;
 	};
-	info: Omit<SessionInfo, "csrf" | "name">;
+	info: Omit<SessionInfo, "csrf" | "name" | "apis">;
+	/** The APIs this user's extensions call with their sign-in's access token. */
+	apis?: Pick<UserAccess, "status" | "signedIn" | "signedOut">;
 	/**
 	 * The frontends this user's page lists, by package name (extensions.ts). Per user, since two
 	 * users' local extensions may share a name and still be different code.
@@ -228,8 +231,9 @@ export function createApp({ config, sessions, oidc, users, web, operationTimeout
 			const transaction = sessions.readLogin(req);
 			if (!transaction) return page(res, 400, "signin-expired.html");
 			let claims;
+			let grant;
 			try {
-				claims = await oidc.finish(url.href, transaction);
+				({ claims, grant } = await oidc.finish(url.href, transaction));
 			} catch (error) {
 				log.warn(`paca: sign-in failed: ${(error as Error).message}`);
 				return page(res, 400, "signin-expired.html");
@@ -239,6 +243,8 @@ export function createApp({ config, sessions, oidc, users, web, operationTimeout
 				log.warn(`paca: refused sign-in for subject ${JSON.stringify(claims.sub)} (username ${JSON.stringify(claims.preferred_username ?? null)}) from ${claims.iss}`);
 				return page(res, 403, "refused.html");
 			}
+			// Kept in memory for this user's APIs only (api-access.ts); never in the cookie or the page.
+			if (grant) users.forSubject(claims.sub)?.apis?.signedIn(grant);
 			return send(res, 303, "", { Location: "/", "Set-Cookie": cookies });
 		}
 		if (route === "GET /signed-out") return page(res, 200, "signed-out.html");
@@ -249,7 +255,7 @@ export function createApp({ config, sessions, oidc, users, web, operationTimeout
 		if (!session || !user) return json(res, 401, { error: "Sign in again." });
 		const { sessions: chats } = user;
 
-		if (route === "GET /api/session") return json(res, 200, { csrf: session.csrf, name: session.name, ...user.info } satisfies SessionInfo);
+		if (route === "GET /api/session") return json(res, 200, { csrf: session.csrf, name: session.name, ...user.info, apis: user.apis?.status() ?? [] } satisfies SessionInfo);
 		const ext = req.method === "GET" ? EXT_ASSET.exec(url.pathname) : null;
 		if (ext) {
 			// Only a package this user's page lists, from this user's own map, and only a file listed at
@@ -310,9 +316,14 @@ export function createApp({ config, sessions, oidc, users, web, operationTimeout
 			if (typeof draftId !== "string" || !draftId || draftId.length > 200) return json(res, 400, { error: "Missing draft id." });
 			const result = action === "drafts/approve" ? await chats.approveDraft(id, draftId) : chats.dismissDraft(id, draftId);
 			if (result.refused === "not-found") return json(res, 404, { error: "That draft does not exist." });
+			if (result.refused === "not-ready") return json(res, 409, { error: result.error, status: "proposed" });
 			return reply(res, result);
 		}
-		if (route === "POST /auth/logout") return json(res, 200, {}, { "Set-Cookie": sessions.end() });
+		// Signing out ends the user's API access on every device (docs/design/api-access.md).
+		if (route === "POST /auth/logout") {
+			user.apis?.signedOut();
+			return json(res, 200, {}, { "Set-Cookie": sessions.end() });
+		}
 		return json(res, 404, { error: "Not found." });
 	}
 

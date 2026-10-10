@@ -10,6 +10,19 @@ export interface SessionInfo {
 	scopeDetail: string;
 	/** The tool packages whose frontend the page may load for this user. */
 	extensions: ExtensionInfo[];
+	/** The APIs this user's extensions may call as them, and whether they can now. */
+	apis: ApiStatus[];
+}
+
+/**
+ * An API the user's extensions call with their sign-in's access token (docs/design/api-access.md).
+ * `sign-in`: Paca holds no usable access for them (after a restart, a sign-out elsewhere or a refused
+ * refresh), so they must sign in again. `not-granted`: their sign-in lacks the API's scopes.
+ */
+export interface ApiStatus {
+	name: string;
+	label: string;
+	state: "ready" | "sign-in" | "not-granted";
 }
 
 /** A package's frontend, as the page loads it. URLs are same-origin paths under /ext/<name>/. */

@@ -6,9 +6,11 @@
 // GitHub package's frontend off (`disableFrontends`), with its own data in .data/preview-frontends-off/,
 // to show cards as fallback text. PACA_PREVIEW_PUBLIC_URL and PACA_PREVIEW_LOGIN_URL set the
 // origins a browser uses for Paca and the fake sign-in page, when an HTTPS proxy on another host
-// name forwards them to this machine; every listener stays on loopback. See CONTRIBUTING.md.
+// name forwards them to this machine; every listener stays on loopback. Both users' sign-in also
+// lets the example extension in test/fixtures/extension-downstream, copied in as a local extension,
+// call the fake Example API (test/container/fake-api.mjs) as them. See CONTRIBUTING.md.
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -62,13 +64,15 @@ if (!existsSync(join(tlsDir, "cert.pem"))) {
 const config = {
 	publicUrl,
 	port,
-	oidc: { issuer, clientId: "paca-smoke" },
+	oidc: { issuer, clientId: "paca-smoke", scopes: ["offline_access"] },
 	model: "fake/fake-model",
 	extensions: { "@paca/extension-github": { piClean: "/nonexistent/pi-clean" }, "@paca/extension-herdr": { socket: join(herdrDir, "herdr.sock") } },
 	...(frontendsOff ? { disableFrontends: ["@paca/extension-github"] } : {}),
+	apis: { notes: { label: "Example API", url: `${issuer}example-api/v1/`, scopes: ["notes.read", "notes.write"], extensions: ["example-notes"] } },
 	users: USERS.map((u) => ({
 		id: u.id,
 		subject: u.sub,
+		apis: ["notes"],
 		...(u.operator ? { operator: true, herdr: { roots: ["/home/preview/code"] } } : {}),
 		github: { projects: [{ owner: u.repository.split("/")[0], number: 1, repository: u.repository }], tokenEnv: `PACA_GH_TOKEN_${u.id.toUpperCase()}` },
 	})),
@@ -76,6 +80,10 @@ const config = {
 writeFileSync(join(dataDir, "config.json"), JSON.stringify(config, null, 2), { mode: 0o600 });
 const models = { providers: { fake: { baseUrl: `${issuer}v1`, api: "openai-completions", apiKey: "preview-model-key", models: [{ id: "fake-model" }] } } };
 writeFileSync(join(dataDir, "pi", "models.json"), JSON.stringify(models), { mode: 0o600 });
+// The example extension of an API called as the user, as a local extension for both, fresh on every start.
+const example = join(dataDir, "local-extensions", "example-notes");
+rmSync(example, { recursive: true, force: true });
+cpSync(join(root, "test", "fixtures", "extension-downstream"), example, { recursive: true });
 
 execFileSync("npm", ["run", "--silent", "build"], { cwd: root, stdio: "inherit" });
 const fakes = startFakes({
@@ -85,6 +93,8 @@ const fakes = startFakes({
 	tls: { key: readFileSync(join(tlsDir, "key.pem")), cert: readFileSync(join(tlsDir, "cert.pem")) },
 	login: { origin: loginOrigin, port: loginPort, users: USERS.map((u) => ({ sub: u.sub, username: u.username })) },
 	modelDelayMs: 4000,
+	// Short, so the Example API's access is renewed with the refresh token while you look.
+	accessSeconds: 120,
 });
 
 // The operator's Herdr: two agents in /home/preview/code and one outside the scope.
@@ -106,6 +116,7 @@ const paca = spawn(process.execPath, [join(root, "packages", "api", "src", "main
 console.log(`preview: open ${publicUrl}/ and sign in as ${USERS.map((u) => u.id).join(" or ")}`);
 console.log("preview: martin also has a fake Herdr; ask him something about an agent to see a prompt card");
 console.log(`preview: name an issue to see its card while the answer streams: ${USERS.map((u) => `${u.repository}#12 as ${u.id}`).join(", ")}`);
+console.log("preview: Example notes reads the fake Example API with your sign-in's access token; after a restart it asks you to sign in again");
 if (frontendsOff) console.log("preview: the GitHub frontend is off here, so issue cards show their fallback text");
 console.log(`preview: the fake sign-in page is ${loginOrigin}, listening on https://localhost:${loginPort} with a throwaway certificate; on localhost, accept the browser's warning once`);
 const stop = () => paca.kill("SIGTERM");

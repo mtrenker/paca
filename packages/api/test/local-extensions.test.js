@@ -61,7 +61,7 @@ async function serve(users) {
 	const server = createApp({
 		config: { publicUrl: PUBLIC, publicOrigin: PUBLIC },
 		sessions: createSessions({ key: randomBytes(32), issuer: ISSUER, allows: (sub) => users.forSubject(sub) !== undefined }),
-		oidc: { begin: async () => ({ url: `${ISSUER}authorize`, transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => next },
+		oidc: { begin: async () => ({ url: `${ISSUER}authorize`, transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => ({ claims: next }) },
 		users,
 		web: { public: join(ROOT, "packages", "web", "public"), script: join(ROOT, "packages", "web", "public") },
 		log: { warn: () => {}, error: () => {} },
@@ -231,7 +231,7 @@ describe("local extensions", () => {
 		assert.deepEqual(local.get("alex").map((p) => [p.module, p.package.name, p.local, p.frontend]), [["local-extensions/good", "good", true, undefined], ["local-extensions/no-build", "no-build", true, undefined]]);
 		const skip = (name, why) => `paca: local extension local-extensions/${name} skipped: ${why}`;
 		const expected = [
-			skip("Bad_Name", "the directory name must be lowercase letters, digits and dashes, and not paca, id, subject, operator"),
+			skip("Bad_Name", "the directory name must be lowercase letters, digits and dashes, and not paca, id, subject, operator, apis"),
 			skip("bad-json", 'it needs a package.json with "type": "module" (not valid JSON)'),
 			skip("bad-manifest", "browser: cards must be distinct names of lowercase letters, digits and dashes"),
 			skip("commonjs", 'it needs a package.json with "type": "module"'),
@@ -245,7 +245,7 @@ describe("local extensions", () => {
 			skip("no-entry", "it needs an index.ts or index.js"),
 			skip("no-package", 'it needs a package.json with "type": "module" (ENOENT)'),
 			skip("not-a-package", "has no default export from defineToolPackage()"),
-			skip("operator", "the directory name must be lowercase letters, digits and dashes, and not paca, id, subject, operator"),
+			skip("operator", "the directory name must be lowercase letters, digits and dashes, and not paca, id, subject, operator, apis"),
 			/^paca: local extension local-extensions\/syntax skipped: .+ \(file:\/\/.*\/syntax\/index\.ts:\d+\)$/,
 			/^paca: local extension local-extensions\/throws skipped: top-level failure \(file:\/\/.*\/throws\/index\.ts:1\)$/,
 			skip("wrong-name", 'defineToolPackage names it "other"; use its directory name, "wrong-name"'),

@@ -16,7 +16,7 @@ import { checkPackage, type LoadedPackage } from "./extensions.ts";
 const HOST_PACKAGES = /^(@paca\/extension|@earendil-works\/pi-ai|@earendil-works\/pi-coding-agent)(\/|$)/;
 const NAME = /^[a-z][a-z0-9-]*$/;
 /** Names a local extension may not take: Paca's own, and the keys of a users[] entry. */
-const RESERVED = ["paca", "id", "subject", "operator"];
+const RESERVED = ["paca", "id", "subject", "operator", "apis"];
 
 const roots: string[] = [];
 let hooked = false;

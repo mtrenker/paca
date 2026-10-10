@@ -56,7 +56,7 @@ describe("package operations", () => {
 		server = createApp({
 			config: { publicUrl: PUBLIC, publicOrigin: PUBLIC },
 			sessions,
-			oidc: { begin: async () => ({ url: `${ISSUER}authorize`, transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => next },
+			oidc: { begin: async () => ({ url: `${ISSUER}authorize`, transaction: { state: "s", nonce: "n", verifier: "v" } }), finish: async () => ({ claims: next }) },
 			users: { forSubject: (sub) => users.get(sub) },
 			web: { public: join(import.meta.dirname, "..", "..", "web", "public"), script: join(import.meta.dirname, "..", "..", "web", "public") },
 			operationTimeoutMs: 100,
