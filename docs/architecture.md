@@ -93,7 +93,8 @@ by name (`extensions`), and paths are refused; the only other packages are
 server's privileges: they are trusted, not sandboxed.
 
 `forUser` receives the host-authenticated user (their id and whether they are the operator), the
-package's settings and that user's settings, and returns Pi tools (`defineTool` from
+package's settings and that user's settings, the APIs it may call as that user
+([APIs called as the user](#apis-called-as-the-user)), and returns Pi tools (`defineTool` from
 `@earendil-works/pi-coding-agent`), facts for the system prompt, and labels for the page. Paca
 gives these tools to each `AgentSession` as its only tools; its run limits sit around them in an
 inline extension and at the session's stream function.
@@ -261,6 +262,32 @@ for that user only. The decisions:
 - **Frontends per user.** Each user's file map is their own (`UserHost.frontends`), not one map by
   package name, because two users' personal extensions may share a name, and so the URL
   `/ext/<name>/`, with different code.
+
+## APIs called as the user
+
+Extensions can call configured APIs as the signed-in user with the access token of their Paca
+sign-in ([#21](https://github.com/mtrenker/paca/issues/21)). The contract, with what an API must
+accept and why a separate connect flow was dropped, is [API access](design/api-access.md). The
+decisions:
+
+- **Paca's own token.** Sign-in asks for each configured API's scopes. `auth.ts` keeps the access
+  token, refresh token, expiry and granted scopes; the ID token only identifies the user. The API
+  must accept tokens issued to Paca's client.
+- **One grant per user, in memory** (`api-access.ts`), from their latest sign-in, shared by their
+  devices and sessions like their tools. It ends with that sign-in's 12-hour session, a sign-out
+  on any device, a refused refresh or a restart; the page then shows **Sign in again** while the
+  cookie still signs the user in. Nothing is persisted, so there is no key to keep.
+- **Allowlisted twice.** A user gets an API only when their entry lists it, and an extension only
+  when the API lists the extension. `forUser` receives `apis` with `state()` and `request()`;
+  the token never reaches the extension, the model, the page or the logs.
+- **Requests stay put.** Only paths below the configured URL; no redirects followed; reads retry
+  once after a 401 with a refreshed token, writes never. One refresh per user at a time.
+- **Approvals wait.** A write action may answer `ready` before the claim; the example refuses
+  while the user must sign in again, and the draft stays proposed. After the claim, a missing
+  grant fails the write before sending; anything that may have reached the API is `unknown`.
+- **Example.** `test/fixtures/extension-downstream` (`example-notes`) reads and proposes notes in
+  the fake Example API (`test/container/fake-api.mjs`); the preview, tests and container check
+  load it as a local extension.
 
 ## Future extension storage (not built)
 
