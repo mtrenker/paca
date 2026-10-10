@@ -11,6 +11,11 @@ export const GRANT_MS = 12 * 60 * 60 * 1000;
 /** Refresh before use when the access token expires within this. */
 const REFRESH_EARLY_MS = 60 * 1000;
 const ANSWER_MAX = 512 * 1024;
+/**
+ * One strong entity tag (RFC 9110, 8.8.3): a quoted string of visible ASCII without `"`. No `W/`,
+ * no `*`, no list, so a conditional write can only name the exact version the user approved.
+ */
+const STRONG_ETAG = /^"[\x21\x23-\x7e]{0,254}"$/;
 
 /** What the issuer granted at sign-in or a refresh: never shown, logged or passed on. */
 export interface Grant {
@@ -168,12 +173,18 @@ export function createApiAccess({ apis, refresh: refreshGrant, fetch: send = fet
 		return covers(held.grant, api.scopes) ? "ready" : "not-granted";
 	}
 
-	async function call(api: ApiConfig, url: URL, held: Held, method: ApiMethod, body: JsonValue | undefined, signal: AbortSignal | undefined) {
+	async function call(api: ApiConfig, url: URL, held: Held, method: ApiMethod, body: JsonValue | undefined, signal: AbortSignal | undefined, ifMatch?: string) {
 		let response: Response;
 		try {
 			response = await send(url, {
 				method,
-				headers: { Authorization: `Bearer ${held.grant.accessToken}`, Accept: "application/json", ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+				// Paca's headers only: the extension's single say is a checked If-Match.
+				headers: {
+					Authorization: `Bearer ${held.grant.accessToken}`,
+					Accept: "application/json",
+					...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+					...(ifMatch !== undefined ? { "If-Match": ifMatch } : {}),
+				},
 				body: body !== undefined ? JSON.stringify(body) : undefined,
 				redirect: "manual",
 				signal,
@@ -202,13 +213,16 @@ export function createApiAccess({ apis, refresh: refreshGrant, fetch: send = fet
 			name: api.name,
 			label: api.label,
 			state: () => stateOf(api, slot),
-			async request(path, { method = "GET", body, signal } = {}) {
+			async request(path, { method = "GET", body, signal, ifMatch } = {}) {
 				const url = resolveBelow(api.url, path);
 				if (!url) throw new ApiError("destination", `Paca only sends requests below ${api.label}'s configured address.`, false);
+				if (ifMatch !== undefined && (method === "GET" || typeof ifMatch !== "string" || !STRONG_ETAG.test(ifMatch))) {
+					throw new ApiError("if-match", `Paca sends If-Match only on a write, as one quoted strong version such as "v42".`, false);
+				}
 				let held = await usable(api, user, slot);
 				if (!covers(held.grant, api.scopes)) throw new ApiError("not-granted", `Your Paca sign-in does not include access to ${api.label}.`, false);
-				const answer = await call(api, url, held, method, body, signal);
-				// A read may renew and ask once more; a write never goes twice.
+				const answer = await call(api, url, held, method, body, signal, ifMatch);
+				// A read may renew and ask once more; a write never goes twice, also not after a 412.
 				if (method !== "GET" || answer.status !== 401 || !held.grant.refreshToken) return answer;
 				held = await refresh(api, user, slot, held);
 				if (!covers(held.grant, api.scopes)) throw new ApiError("not-granted", `Your Paca sign-in does not include access to ${api.label}.`, false);

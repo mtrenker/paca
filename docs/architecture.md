@@ -281,7 +281,8 @@ decisions:
   when the API lists the extension. `forUser` receives `apis` with `state()` and `request()`;
   the token never reaches the extension, the model, the page or the logs.
 - **Requests stay put.** Only paths below the configured URL; no redirects followed; reads retry
-  once after a 401 with a refreshed token, writes never. One refresh per user at a time.
+  once after a 401 with a refreshed token, writes never. One refresh per user at a time. Headers
+  are Paca's, apart from a checked `If-Match` (`ifMatch`, one strong version) on a write.
 - **Approvals wait.** A write action may answer `ready` before the claim; the example refuses
   while the user must sign in again, and the draft stays proposed. After the claim, a missing
   grant fails the write before sending; anything that may have reached the API is `unknown`.

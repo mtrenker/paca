@@ -167,9 +167,14 @@ export interface UserApi {
 	/**
 	 * One JSON request to a path below the configured URL. Answers every HTTP status; throws
 	 * ApiError otherwise. A read (GET) may refresh and retry once after a 401. Every other method is
-	 * a write and is never retried.
+	 * a write and is never retried, also not after a 412.
+	 *
+	 * `ifMatch` makes a write conditional: one strong entity tag, quoted, such as `"v42"`, sent
+	 * unchanged as `If-Match`. Pass the version the user approved, stored in the proposal; do not
+	 * read a newer one when the write runs. A weak tag, `*`, a list or a malformed value is refused
+	 * before sending (ApiError "if-match", `sent: false`). Paca sets every other header itself.
 	 */
-	request(path: string, init?: { method?: ApiMethod; body?: JsonValue; signal?: AbortSignal }): Promise<{ status: number; body: unknown }>;
+	request(path: string, init?: { method?: ApiMethod; body?: JsonValue; signal?: AbortSignal; ifMatch?: string }): Promise<{ status: number; body: unknown }>;
 }
 
 /**

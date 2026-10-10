@@ -93,9 +93,9 @@ Each offers:
 
 - `state()`: `ready`, `sign-in` (no usable grant now) or `not-granted` (this sign-in lacks the
   API's scopes). It is read at call time; nothing is fixed at start.
-- `request(path, { method, body, signal })`: one JSON request to `url` + `path` with the user's
-  access token, which the extension never sees. It answers `{ status, body }` for any HTTP status,
-  without headers.
+- `request(path, { method, body, signal, ifMatch })`: one JSON request to `url` + `path` with the
+  user's access token, which the extension never sees. It answers `{ status, body }` for any HTTP
+  status, without headers.
 
 The host enforces in `request`:
 
@@ -104,7 +104,17 @@ The host enforces in `request`:
   before a token is touched.
 - **Redirects** are never followed: a 3xx answer is an error, so a token never goes to a second URL.
 - **Reads** (`GET`) that answer 401 refresh once and retry once.
-- **Writes** (every other method) are never retried: not after a 401, a timeout or a refresh.
+- **Writes** (every other method) are never retried: not after a 401, a 412, a timeout or a refresh.
+- **Headers** are Paca's: `Authorization`, `Accept` and `Content-Type`. There is no header option.
+  The one exception is `ifMatch`, for an API that needs a version precondition on writes (added for
+  [PR #22](https://github.com/mtrenker/paca/pull/22#issuecomment-6102498753)): exactly one strong
+  entity tag, quoted, of visible ASCII and at most 256 characters (`"v42"`), sent unchanged as
+  `If-Match` on a write. A weak tag (`W/"…"`), `*`, a list, an unquoted or malformed value, or
+  `ifMatch` on a read is refused before sending (`if-match`, `sent: false`), since each would let a
+  write go through against a version the user did not approve. The API's answer to a stale version
+  (412) or a missing one (428) comes back as it is; Paca never fetches a newer version or resends.
+  The extension stores the version it read in the proposal (`expect`), so the user approves an edit
+  of that version, and its write action sends exactly that stored value without reading again.
 - **Errors** are `ApiError` with `sent: false` when nothing left Paca (no grant, not granted,
   destination refused, refresh failed) and `sent: true` when the request may have reached the API
   (connection lost, redirect, unreadable or oversized answer). A write action maps `sent: false`

@@ -211,6 +211,8 @@ if (!api) return undefined; // this user may not call it
 const answer = await api.request("/notes", { signal });
 // In a write action, after the user approved the exact proposal: sent once, never retried.
 await api.request("/notes", { method: "POST", body: { text: proposal.body } });
+// A conditional write: the version (a quoted strong ETag) read when proposing, kept in the proposal.
+await api.request(`/notes/${proposal.expect.id}`, { method: "PATCH", body: { text: proposal.body }, ifMatch: proposal.expect.etag });
 ```
 
 - `api.state()` is `ready`, `sign-in` (the user must sign in to Paca again, after a restart or a
@@ -220,9 +222,14 @@ await api.request("/notes", { method: "POST", body: { text: proposal.body } });
   did not happen (`failed`); `sent: true` means it may have (`unknown`).
 - Give your write action a `ready()` that returns why it cannot run now, such as a needed
   sign-in: the approval is then refused and the proposal waits.
+- For an API that wants `If-Match` on edits, read the version when you build the proposal, put
+  it in `expect`, and pass exactly that as `ifMatch` in the write action. Do not read the item
+  again when the write runs: a newer version would overwrite a change the user never saw. A 412
+  means it changed; report `failed` and let the user propose again. `ifMatch` takes one quoted
+  strong ETag on a write and nothing else; Paca sets every other header.
 
 The complete example is `test/fixtures/extension-downstream` in Paca's repository: a read tool,
-a proposed note with its write action, and a page.
+a proposed note with its write action, a conditional edit of a note, and a page.
 
 ## Imports and dependencies
 

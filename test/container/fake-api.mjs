@@ -21,7 +21,7 @@ export function createFakeApi({ audience, accessSeconds = 300, now = () => Date.
 	const access = new Map();
 	const refresh = new Map();
 	const notes = new Map();
-	/** What tests switch on, and every request the API saw (method, path, subject; never a token). */
+	/** What tests switch on, and every request the API saw (method, path, subject, If-Match; never a token). */
 	const faults = { refuseRefresh: false, grantedScope: undefined, refreshDelayMs: 0, writeStatus: undefined };
 	const seen = [];
 
@@ -48,15 +48,23 @@ export function createFakeApi({ audience, accessSeconds = 300, now = () => Date.
 		return issue(held);
 	}
 
-	/** The API: the caller's own account and notes, nothing else. */
+	/** A note with its version: a strong ETag in the JSON body, as the API answers it. */
+	const versioned = (id, text, version = 1) => ({ id, text, version, etag: `"note-${id}-v${version}"` });
+	/** Another client changing a note, so the version the user approved is out of date. */
+	function changeElsewhere(sub, id, text) {
+		const note = notes.get(sub)?.find((n) => n.id === id);
+		if (note) Object.assign(note, versioned(id, text, note.version + 1));
+	}
+
+	/** The API: the caller's own account and notes, nothing else. Editing a note needs its version in If-Match. */
 	async function handle(request) {
 		const path = new URL(request.url).pathname.slice(API_PATH.length);
 		const bearer = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
 		const grant = bearer && access.get(bearer);
-		seen.push({ method: request.method, path, sub: grant?.sub });
+		seen.push({ method: request.method, path, sub: grant?.sub, ifMatch: request.headers.get("if-match") });
 		if (!grant || grant.exp <= now() || grant.aud !== audience) return json(401, { error: "invalid_token" }, { "WWW-Authenticate": 'Bearer error="invalid_token"' });
 		const scopes = grant.scope.split(" ");
-		if (!notes.has(grant.sub)) notes.set(grant.sub, [{ id: 1, text: `Welcome, ${grant.username}. This note lives in the fake Example API.` }]);
+		if (!notes.has(grant.sub)) notes.set(grant.sub, [versioned(1, `Welcome, ${grant.username}. This note lives in the fake Example API.`)]);
 		const mine = notes.get(grant.sub);
 		if (request.method === "GET" && path === "me") return json(200, { subject: grant.sub, username: grant.username });
 		if (request.method === "GET" && path === "notes") {
@@ -69,17 +77,30 @@ export function createFakeApi({ audience, accessSeconds = 300, now = () => Date.
 			if (typeof body?.text !== "string" || !body.text.trim() || body.text.length > 500) return json(400, { error: "A note needs 1 to 500 characters." });
 			// A test's refusal writes nothing; its server error writes and then fails, so the outcome is unknown.
 			if (faults.writeStatus >= 400 && faults.writeStatus < 500) return json(faults.writeStatus, { error: "refused" });
-			const note = { id: mine.length + 1, text: body.text };
+			const note = versioned(mine.length + 1, body.text);
 			mine.push(note);
 			if (faults.writeStatus >= 500) return json(faults.writeStatus, { error: "failed after writing" });
 			return json(201, note);
+		}
+		const edit = /^notes\/(\d+)$/.exec(path);
+		if (request.method === "PATCH" && edit) {
+			if (!scopes.includes("notes.write")) return json(403, { error: "insufficient_scope" });
+			const note = mine.find((n) => n.id === Number(edit[1]));
+			if (!note) return json(404, { error: "no such note" });
+			const condition = request.headers.get("if-match");
+			if (condition === null) return json(428, { error: "If-Match is required" });
+			if (condition !== note.etag) return json(412, { error: "the note changed", current: note });
+			const body = await request.json().catch(() => undefined);
+			if (typeof body?.text !== "string" || !body.text.trim() || body.text.length > 500) return json(400, { error: "A note needs 1 to 500 characters." });
+			Object.assign(note, versioned(note.id, body.text, note.version + 1));
+			return json(200, note);
 		}
 		// For the redirect refusal: a bearer token must never follow this.
 		if (path === "moved") return new Response(null, { status: 302, headers: { Location: "https://elsewhere.invalid/steal" } });
 		return json(404, { error: "not found" });
 	}
 
-	return { issue, renew, handle, faults, seen, access, refresh, notes };
+	return { issue, renew, handle, changeElsewhere, faults, seen, access, refresh, notes };
 }
 
 /** Serves a fetch-style answer to a node http(s) request. */

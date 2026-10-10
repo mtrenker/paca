@@ -201,6 +201,45 @@ describe("an API called with the sign-in's access token", () => {
 			assert.deepEqual(await approve(again, proposal), [200, { status: "created" }]);
 		});
 
+		describe("a conditional edit", () => {
+			/** An edit of note 1 the faux model proposes, with the version the note had then. */
+			async function proposedEdit(note) {
+				const device = await paca.signIn("sub-martin");
+				await device.notes(); // the fake API makes the first note on a first read
+				const at = fake.notes.get("sub-martin")[0].etag;
+				model.faux.setResponses([call("propose_note_edit", { id: 1, note }), text("Proposed.")]);
+				const { sessions } = paca.users.forSubject("sub-martin");
+				const id = newId();
+				sessions.start(id, `Change note 1 to ${note}`, `request-${id}`);
+				await idle(sessions, id);
+				const [draft] = (await stateOf(sessions, id)).turns.flatMap((t) => t.drafts);
+				return { device, at, proposal: { id, draft } };
+			}
+
+			it("writes with the version the user approved, without reading it again", async () => {
+				const { device, at, proposal } = await proposedEdit("Edited once");
+				assert.deepEqual([proposal.draft.action, proposal.draft.body, proposal.draft.status], ["example-notes.edit_note", "Edited once", "proposed"]);
+				assert.match(proposal.draft.title, /^Edit note 1, which said: /);
+				const before = fake.seen.length;
+				assert.deepEqual(await approve(device, proposal), [200, { status: "created" }]);
+				assert.deepEqual(fake.seen.slice(before).map((r) => [r.method, r.path, r.ifMatch]), [["PATCH", "notes/1", at]], "one PATCH with the stored version, no read first");
+				assert.equal(fake.notes.get("sub-martin")[0].text, "Edited once");
+			});
+
+			it("fails, sending once, when the note changed after the proposal", async () => {
+				const { device, at, proposal } = await proposedEdit("Edited twice");
+				fake.changeElsewhere("sub-martin", 1, "Changed elsewhere");
+				const before = fake.seen.length;
+				assert.deepEqual(await approve(device, proposal), [200, { status: "failed" }]);
+				assert.deepEqual(fake.seen.slice(before).map((r) => [r.method, r.ifMatch]), [["PATCH", at]]);
+				assert.equal(fake.notes.get("sub-martin")[0].text, "Changed elsewhere", "the other change is kept");
+				const [draft] = (await stateOf(paca.users.forSubject("sub-martin").sessions, proposal.id)).turns.flatMap((t) => t.drafts);
+				assert.match(draft.error, /changed in Example API after this was proposed/);
+				assert.equal((await approve(device, proposal))[0], 409, "never sent again");
+				assert.equal(fake.seen.length, before + 1);
+			});
+		});
+
 		it("never sends an unknown write again, and records a refusal as failed", async () => {
 			const device = await paca.signIn("sub-martin");
 			const unknown = await proposed("Maybe written");

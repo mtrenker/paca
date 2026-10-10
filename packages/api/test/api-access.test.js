@@ -91,6 +91,65 @@ describe("API access with the sign-in's access token", () => {
 		await assert.rejects(martin.forExtension("example-notes").notes.request("/notes"), (e) => e.code === "not-granted" && !e.sent);
 	});
 
+	describe("conditional writes", () => {
+		const ready = (t) => {
+			const martin = t.access.forUser("martin", "sub-martin", ["notes"]);
+			t.signIn(martin, "sub-martin", "martin");
+			return martin.forExtension("example-notes").notes;
+		};
+		const etagOf = async (api) => (await api.request("/notes")).body.notes[0].etag;
+
+		it("sends the exact strong If-Match on a write, and none when it is left out", async () => {
+			const t = setUp();
+			const api = ready(t);
+			const etag = await etagOf(api);
+			assert.equal(etag, '"note-1-v1"');
+			const answer = await api.request("/notes/1", { method: "PATCH", body: { text: "edited" }, ifMatch: etag });
+			assert.deepEqual([answer.status, answer.body.etag], [200, '"note-1-v2"']);
+			assert.equal(t.fake.seen.at(-1).ifMatch, etag, "unchanged on the wire");
+			await api.request("/notes", { method: "POST", body: { text: "plain" } });
+			await api.request("/notes");
+			assert.deepEqual(t.fake.seen.slice(-2).map((r) => r.ifMatch), [null, null], "existing calls send no If-Match");
+			assert.equal((await api.request("/notes/1", { method: "PATCH", body: { text: "x" } })).status, 428, "the API's own answer to a missing one comes back as it is");
+		});
+
+		it("returns a 412 as it is, without refreshing or sending the write again", async () => {
+			const t = setUp();
+			const api = ready(t);
+			const etag = await etagOf(api);
+			t.fake.changeElsewhere("sub-martin", 1, "changed by someone else");
+			const answer = await api.request("/notes/1", { method: "PATCH", body: { text: "mine" }, ifMatch: etag });
+			assert.equal(answer.status, 412);
+			assert.equal(answer.body.current.text, "changed by someone else");
+			assert.equal(t.fake.seen.filter((r) => r.method === "PATCH").length, 1);
+			assert.equal(t.issuer.refreshes, 0);
+			assert.equal(t.fake.notes.get("sub-martin")[0].text, "changed by someone else", "nothing overwritten");
+		});
+
+		it("refuses anything but one quoted strong version before sending, and on reads", async () => {
+			const t = setUp();
+			const api = ready(t);
+			const before = t.fake.seen.length;
+			const bad = ['W/"note-1-v1"', "*", '"a", "b"', '"a","b"', "note-1-v1", '"a\r\nAuthorization: Bearer x"', '"a" ', '"has"quote"', `"${"x".repeat(255)}"`, '"ünï"', 42];
+			for (const ifMatch of bad) {
+				await assert.rejects(api.request("/notes/1", { method: "PATCH", body: { text: "x" }, ifMatch }), (e) => e instanceof ApiError && e.code === "if-match" && !e.sent, String(ifMatch));
+			}
+			await assert.rejects(api.request("/notes", { ifMatch: '"note-1-v1"' }), (e) => e.code === "if-match" && !e.sent);
+			assert.equal(t.fake.seen.length, before, "nothing was sent");
+			assert.equal(t.issuer.refreshes, 0);
+		});
+
+		it("keeps the bearer credential and other headers the host's", async () => {
+			const t = setUp();
+			const api = ready(t);
+			const etag = await etagOf(api);
+			// Not part of the contract; a caller that tries anyway changes nothing.
+			const answer = await api.request("/notes/1", { method: "PATCH", body: { text: "mine" }, ifMatch: etag, headers: { Authorization: "Bearer someone-else", "If-Match": "*" } });
+			assert.equal(answer.status, 200);
+			assert.deepEqual([t.fake.seen.at(-1).sub, t.fake.seen.at(-1).ifMatch], ["sub-martin", etag]);
+		});
+	});
+
 	describe("lifetime", () => {
 		const ready = (t) => {
 			const martin = t.access.forUser("martin", "sub-martin", ["notes"]);
