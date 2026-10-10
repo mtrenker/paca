@@ -38,7 +38,8 @@ Before configuring a real API, check on the provider and the API that:
 - Paca's authentik provider has scope mappings for the API's scopes, and `offline_access` if
   refresh tokens are wanted, and its token answer grants them;
 - the API's configuration lists Paca's client as an accepted audience, and checks the scopes;
-- the access token's lifetime suits the API (without a refresh token the grant ends with it).
+- the access token's lifetime suits the API (without a refresh token the grant ends a minute
+  before it).
 
 Paca was checked only against synthetic services (`test/container/fake-api.mjs`), not a live
 authentik or a real API.
@@ -74,8 +75,8 @@ and sessions share it, as they share their tools.
 | --- | --- |
 | **Sign-in** | The access token, refresh token (if any), expiry and granted scopes are kept for the user the ID token's subject names, replacing that user's earlier grant |
 | **Scopes missing** | Sign-in still works for the chat. An API whose scopes the token answer lacks is **not granted** for this sign-in, and one log line names the missing scopes. Signing in again does not help; the provider's settings must change. A token answer without `scope` counts as everything asked for (RFC 6749, 5.1) |
-| **Access token expires** | Refreshed before use when it expires within 60 seconds and there is a refresh token: one refresh per user at a time, which concurrent requests wait for. A rotated refresh token replaces the old one. Without a refresh token the grant ends at expiry |
-| **Refresh refused** | The grant ends. A refresh that could not reach the provider fails only that request and keeps the grant |
+| **Access token expires** | Refreshed before use when it expires within 60 seconds and there is a refresh token: one refresh per user at a time, which concurrent requests wait for. A rotated refresh token replaces the old one, and a request that still holds the old grant (a read whose 401 arrives late) uses the renewed one instead of refreshing again. Without a refresh token the grant ends 60 seconds before the access token expires, and the API's state says so from then on, so an approval waits instead of failing |
+| **Refresh refused** | The grant ends: the provider answered with a refusal (a 4xx such as `invalid_grant`) or with tokens that fail validation. A refresh that got no answer, timed out, or got an answer saying the provider is down or overloaded (HTTP 5xx, 408 or 429, also a proxy's page) fails only that request and keeps the grant |
 | **Refresh changes identity** | A refreshed ID token naming another subject, or a narrower scope answer, ends the grant |
 | **12 hours after the sign-in** | The grant ends with the session cookie that sign-in made, so it never outlives that sign-in |
 | **Sign out** | Ends the user's grant on every device. Another device keeps its Paca session and is asked to sign in again before extensions can call the API |

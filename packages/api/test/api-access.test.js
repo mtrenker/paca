@@ -173,6 +173,56 @@ describe("API access with the sign-in's access token", () => {
 			assert.equal(martin.status()[0].state, "sign-in", "the other access instance holds nothing");
 		});
 
+		it("lets a late 401 of an older read use the grant another read already renewed", async () => {
+			const t = setUp();
+			const martin = t.access.forUser("martin", "sub-martin", ["notes"]);
+			// Two reads leave with the same token; the API answers the second one later.
+			let release;
+			const late = new Promise((resolve) => (release = resolve));
+			let calls = 0;
+			const staggered = createApiAccess({
+				apis: { notes: API },
+				refresh: async (token) => {
+					t.issuer.refreshes += 1;
+					const answer = await t.fake.renew(token);
+					if (!answer) throw new RefreshRefused("invalid_grant");
+					return grantOf(answer, undefined, () => t.clock.now);
+				},
+				fetch: async (url, init) => {
+					const answer = await t.fake.handle(new Request(url, init));
+					if (++calls === 2) await late;
+					return answer;
+				},
+				now: () => t.clock.now,
+				log: { warn: (line) => t.lines.push(line) },
+			});
+			const user = staggered.forUser("martin", "sub-martin", ["notes"]);
+			user.signedIn(t.grantFor("sub-martin", "martin"));
+			const api = user.forExtension("example-notes").notes;
+			t.fake.access.clear(); // the API stops accepting the token before its recorded expiry
+			const first = api.request("/notes");
+			const second = api.request("/me");
+			assert.equal((await first).status, 200, "the first read renewed and retried");
+			release();
+			assert.equal((await second).status, 200, "the late read used the renewed grant");
+			assert.equal(t.issuer.refreshes, 1, "the used-up refresh token was not sent again");
+			assert.equal(user.status()[0].state, "ready");
+			assert.doesNotMatch(t.lines.join("\n"), /refresh refused/);
+			assert.equal(martin.status()[0].state, "sign-in", "the other access instance holds nothing");
+		});
+
+		it("says sign-in in the last minute of a grant without a refresh token, as a request would find", async () => {
+			const t = setUp();
+			const martin = t.access.forUser("martin", "sub-martin", ["notes"]);
+			t.signIn(martin, "sub-martin", "martin", "openid profile notes.read notes.write"); // no offline_access
+			const api = martin.forExtension("example-notes").notes;
+			t.clock.now += 240_000; // 60 seconds left
+			assert.equal(api.state(), "sign-in");
+			const seen = t.fake.seen.length;
+			await assert.rejects(api.request("/notes", { method: "POST", body: { text: "x" } }), (e) => e.code === "sign-in" && !e.sent);
+			assert.equal(t.fake.seen.length, seen);
+		});
+
 		it("ends the grant with the sign-in's 12-hour session, even with a refresh token", async () => {
 			const t = setUp();
 			const { martin, api } = ready(t);

@@ -141,11 +141,25 @@ export async function createOidc({ issuer, clientId, clientSecret, redirectUri, 
 			try {
 				return grantOf(await oidc.refreshTokenGrant(config, refreshToken));
 			} catch (error) {
+				// A temporary failure keeps the grant and fails only this request; anything else ends it.
+				if (temporary(error)) throw error;
 				const code = (error as { code?: string })?.code ?? "";
-				// The issuer answered: an OAuth error, or tokens that fail validation. Anything else did not reach it.
-				if (error instanceof oidc.ResponseBodyError || code.startsWith("OAUTH_")) throw new RefreshRefused((error as { error?: string }).error ?? code);
-				throw error;
+				throw new RefreshRefused((error as { error?: string }).error ?? (code || "refused"));
 			}
 		},
 	};
+}
+
+/**
+ * Whether a failed refresh says nothing about the grant: no answer (a network error, a timeout), or
+ * an issuer that is down, overloaded or slow (HTTP 5xx, 408, 429, also as a proxy's HTML page). Any
+ * other answer, a 4xx such as invalid_grant or tokens that fail validation, is a refusal.
+ * openid-client 6 gives the status on a ResponseBodyError, or as the Response in `cause`.
+ */
+function temporary(error: unknown): boolean {
+	const { code = "", status, cause } = (error ?? {}) as { code?: string; status?: unknown; cause?: unknown };
+	if (code === "OAUTH_TIMEOUT" || code === "OAUTH_ABORT") return true;
+	const answered = typeof status === "number" ? status : cause instanceof Response ? cause.status : undefined;
+	if (answered !== undefined) return answered >= 500 || answered === 408 || answered === 429;
+	return !(error instanceof oidc.ResponseBodyError) && !code.startsWith("OAUTH_");
 }

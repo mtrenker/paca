@@ -63,9 +63,9 @@ describe("an API called with the sign-in's access token", () => {
 		const base = `http://127.0.0.1:${server.address().port}`;
 		const cookieOf = (r) => r.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
 		/** A device of `sub`: a fresh sign-in, whose tokens the fake provider issued for it. */
-		const signIn = async (sub, scope = SCOPE) => {
+		const signIn = async (sub, scope = SCOPE, { expiresIn } = {}) => {
 			const answer = fake.issue({ sub, username: `${sub.slice(4)} (synthetic)`, scope });
-			next = { claims: { iss: ISSUER, sub }, grant: { accessToken: answer.access_token, refreshToken: answer.refresh_token, expiresAt: Date.now() + answer.expires_in * 1000, scope: answer.scope, subject: sub } };
+			next = { claims: { iss: ISSUER, sub }, grant: { accessToken: answer.access_token, refreshToken: answer.refresh_token, expiresAt: Date.now() + (expiresIn ?? answer.expires_in) * 1000, scope: answer.scope, subject: sub } };
 			const login = await fetch(`${base}/auth/login`, { redirect: "manual" });
 			const cookie = cookieOf(await fetch(`${base}/auth/callback?code=c&state=s`, { redirect: "manual", headers: { cookie: cookieOf(login) } }));
 			return device(cookie);
@@ -186,6 +186,19 @@ describe("an API called with the sign-in's access token", () => {
 			assert.deepEqual(fake.notes.get("sub-martin").map((n) => n.text).slice(-1), ["Buy oat milk"]);
 			assert.equal((await approve(again, proposal))[0], 409);
 			assert.equal(posts(), before + 1);
+		});
+
+		it("keeps a proposal waiting in the last minute of an access token that cannot be renewed", async () => {
+			const proposal = await proposed("Near expiry");
+			// A sign-in without offline_access whose access token has 30 seconds left.
+			const device = await paca.signIn("sub-martin", "openid profile notes.read notes.write", { expiresIn: 30 });
+			const before = posts();
+			const [status, answer] = await approve(device, proposal);
+			assert.deepEqual([status, answer.status], [409, "proposed"]);
+			assert.equal((await stateOf(paca.users.forSubject("sub-martin").sessions, proposal.id)).turns.flatMap((t) => t.drafts)[0].status, "proposed");
+			assert.equal(posts(), before);
+			const again = await paca.signIn("sub-martin");
+			assert.deepEqual(await approve(again, proposal), [200, { status: "created" }]);
 		});
 
 		it("never sends an unknown write again, and records a refusal as failed", async () => {

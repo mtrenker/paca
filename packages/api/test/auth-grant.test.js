@@ -24,7 +24,7 @@ function issuer() {
 	};
 	const api = createFakeApi({ audience: CLIENT.id });
 	const codes = new Map();
-	const state = { down: false, idToken: undefined };
+	const state = { down: false, idToken: undefined, refreshAnswer: undefined };
 	const json = (status, value) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 	async function handle(url, init) {
 		if (state.down) throw new TypeError("fetch failed");
@@ -34,6 +34,7 @@ function issuer() {
 		if (path === "/jwks") return json(200, { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k", alg: "ES256", use: "sig" }] });
 		const form = new URLSearchParams(await request.text());
 		if (form.get("grant_type") === "refresh_token") {
+			if (state.refreshAnswer) return state.refreshAnswer();
 			const answer = await api.renew(form.get("refresh_token"));
 			return answer ? json(200, answer) : json(400, { error: "invalid_grant" });
 		}
@@ -100,5 +101,33 @@ describe("sign-in grant", () => {
 		await assert.rejects(oidc.refresh(grant.refreshToken), RefreshRefused, "a used refresh token is refused");
 		fake.state.down = true;
 		await assert.rejects(oidc.refresh(renewed.refreshToken), (e) => !(e instanceof RefreshRefused));
+	});
+
+	it("keeps the grant for an issuer that is down, slow or overloaded, and ends it for a refusal or an invalid answer", async () => {
+		const fake = issuer();
+		const oidc = await signInClient(fake);
+		const html = (status) => () => new Response("<html>unavailable</html>", { status, headers: { "Content-Type": "text/html" } });
+		const body = (status, value) => () => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+		const temporary = {
+			"a timeout": () => Promise.reject(new DOMException("timed out", "TimeoutError")),
+			"a 500 server_error": body(500, { error: "server_error" }),
+			"a 503 page from a proxy": html(503),
+			"a 502 page from a proxy": html(502),
+			"a 429 rate limit": html(429),
+		};
+		const refused = {
+			"400 invalid_grant": body(400, { error: "invalid_grant" }),
+			"401 invalid_client": body(401, { error: "invalid_client" }),
+			"a 200 that is not JSON": html(200),
+			"a 200 without an access token": body(200, { token_type: "Bearer" }),
+		};
+		for (const [name, answer] of Object.entries(temporary)) {
+			fake.state.refreshAnswer = answer;
+			await assert.rejects(oidc.refresh("rt"), (e) => !(e instanceof RefreshRefused), name);
+		}
+		for (const [name, answer] of Object.entries(refused)) {
+			fake.state.refreshAnswer = answer;
+			await assert.rejects(oidc.refresh("rt"), RefreshRefused, name);
+		}
 	});
 });

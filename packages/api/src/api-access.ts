@@ -97,10 +97,13 @@ export function createApiAccess({ apis, refresh: refreshGrant, fetch: send = fet
 
 	/**
 	 * A fresh grant, one refresh at a time per user. Refused: the grant ends. Unreachable: this request
-	 * fails and the grant stays. Replaced or forgotten meanwhile: the result is dropped.
+	 * fails and the grant stays. Replaced or forgotten meanwhile: the result is dropped. Asked for with a
+	 * grant that is no longer the user's (a read's late 401 after another request renewed it, or a new
+	 * sign-in): the current grant is used as it is, since that refresh token may be used up.
 	 */
 	function refresh(api: ApiConfig, user: string, slot: Slot, held: Held): Promise<Held> {
 		if (slot.refreshing) return slot.refreshing;
+		if (slot.held !== held) return usable(api, user, slot);
 		const generation = slot.generation;
 		const running = (async () => {
 			const token = held.grant.refreshToken;
@@ -140,6 +143,9 @@ export function createApiAccess({ apis, refresh: refreshGrant, fetch: send = fet
 		return running;
 	}
 
+	/** Whether the access token expires within REFRESH_EARLY_MS: renewed before use, or the end of a grant without a refresh token. */
+	const due = (held: Held) => held.grant.expiresAt !== undefined && held.grant.expiresAt - REFRESH_EARLY_MS <= now();
+
 	/** The user's grant, refreshed first when its access token is about to expire. */
 	async function usable(api: ApiConfig, user: string, slot: Slot): Promise<Held> {
 		const held = slot.held;
@@ -149,15 +155,16 @@ export function createApiAccess({ apis, refresh: refreshGrant, fetch: send = fet
 			throw signIn(api);
 		}
 		if (slot.refreshing) return slot.refreshing;
-		if (held.grant.expiresAt !== undefined && held.grant.expiresAt - REFRESH_EARLY_MS <= now()) return refresh(api, user, slot, held);
+		if (due(held)) return refresh(api, user, slot, held);
 		return held;
 	}
 
 	function stateOf(api: ApiConfig, slot: Slot): ApiState {
 		const held = slot.held;
 		if (!held || held.until <= now()) return "sign-in";
-		// An access token past its expiry without a refresh token cannot be renewed.
-		if (held.grant.expiresAt !== undefined && held.grant.expiresAt <= now() && !held.grant.refreshToken) return "sign-in";
+		// Without a refresh token the grant ends when a request would renew it (`usable`), so a write
+		// action's `ready` refuses the approval then, instead of letting it be claimed and fail.
+		if (due(held) && !held.grant.refreshToken) return "sign-in";
 		return covers(held.grant, api.scopes) ? "ready" : "not-granted";
 	}
 
